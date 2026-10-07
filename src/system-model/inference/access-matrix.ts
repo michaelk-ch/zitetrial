@@ -13,6 +13,7 @@ export type ColumnFilter =
   | { kind: "integration"; id: string };
 
 const emptyUsage = (): Usage => ({ access: new Map(), integrations: new Set() });
+const operationPriority: Record<Operation, number> = { create: 3, delete: 3, update: 2, read: 1, join: 0, unknown: -1 };
 
 function merge(access: Access, tableId: string, operations: Iterable<Operation>) {
   const combined = access.get(tableId) ?? new Set<Operation>();
@@ -20,8 +21,8 @@ function merge(access: Access, tableId: string, operations: Iterable<Operation>)
   access.set(tableId, combined);
 }
 
-/** App cells union endpoint operations. Hidden joins are excluded before filtering and aggregation. */
-export function buildAccessMatrix(model: SystemModel, { showJoins = true }: { showJoins?: boolean } = {}): MatrixGroup[] {
+/** Apply visibility and priority per endpoint before filtering and app aggregation. */
+export function buildAccessMatrix(model: SystemModel, { showJoins = true, prioritize = false }: { showJoins?: boolean; prioritize?: boolean } = {}): MatrixGroup[] {
   const byEndpoint = new Map<string, Usage>();
   for (const relationship of model.relationships) {
     const usage = byEndpoint.get(relationship.endpointId) ?? emptyUsage();
@@ -30,6 +31,18 @@ export function buildAccessMatrix(model: SystemModel, { showJoins = true }: { sh
       if (operations.length) merge(usage.access, relationship.tableId, operations);
     } else usage.integrations.add(relationship.integrationId);
     byEndpoint.set(relationship.endpointId, usage);
+  }
+  if (prioritize) {
+    for (const usage of byEndpoint.values()) {
+      let highest = -1;
+      for (const operations of usage.access.values()) {
+        for (const operation of operations) highest = Math.max(highest, operationPriority[operation]);
+      }
+      for (const [tableId, operations] of usage.access) {
+        for (const operation of operations) if (operationPriority[operation] < highest) operations.delete(operation);
+        if (!operations.size) usage.access.delete(tableId);
+      }
+    }
   }
   const byApp = new Map<string, MatrixRow[]>();
   for (const endpoint of model.endpoints) {

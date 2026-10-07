@@ -59,7 +59,8 @@ function Cells({ usage, columns, rowName, strong }: { usage: Usage; columns: Col
 
 export default function CrudView({ model }: { model: SystemModel }) {
   const [showJoins, setShowJoins] = useState(false);
-  const groups = useMemo(() => buildAccessMatrix(model, { showJoins }), [model, showJoins]);
+  const [prioritize, setPrioritize] = useState(false);
+  const groups = useMemo(() => buildAccessMatrix(model, { showJoins, prioritize }), [model, showJoins, prioritize]);
   const columns = useMemo<Column[]>(() => [
     ...[...model.tables].sort(byName).map((entity) => ({ kind: "table" as const, entity })),
     ...[...model.integrations].sort(byName).map((entity) => ({ kind: "integration" as const, entity })),
@@ -144,6 +145,10 @@ export default function CrudView({ model }: { model: SystemModel }) {
         <label className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
           <input type="checkbox" checked={showJoins} onChange={(event) => setShowJoins(event.target.checked)} className="accent-[#385e4b]" />
           Show joins
+        </label>
+        <label title="For each endpoint, keep create/delete accesses first, then updates, then reads, then joins." className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
+          <input type="checkbox" checked={prioritize} onChange={(event) => setPrioritize(event.target.checked)} className="accent-[#385e4b]" />
+          Prioritize
         </label>
         <span aria-live="polite" className="ml-auto text-xs text-muted">{filtering ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
       </div>
