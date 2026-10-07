@@ -2,6 +2,10 @@
 
 Next.js App Router project with React, strict TypeScript, ESLint, and Tailwind CSS.
 
+## Setup
+
+Set `OPENAI_API_KEY` in `.env.local`
+
 ## Development
 
 Use Node.js 22 and npm. Install dependencies with `npm ci`, then run:
@@ -48,17 +52,3 @@ To add a repository, use **+ Import** in the sidebar and either:
 - enter an HTTPS Git URL (e.g. `https://github.com/zite/grant-management`); the latest commit of the
   default branch is shallow-cloned with the server's Git credentials, without `.git`; or
 - paste the Zite repository files API response (`{ "files": [{ "path", "content" }], "headSha" }`).
-
-It is written to `userdata/<workspace>/<commit>`, where the workspace is the kebab-cased
-`project.name` from the required root `zite.config.json` (`Baden Dampft` → `baden-dampft`).
-
-Run `npm run analyze -- userdata/<workspace>/<sha> model.json` to analyze a checkout.
-See [`src/analyzer/README.md`](src/analyzer/README.md) for the API and supported patterns.
-
-Set `OPENAI_API_KEY` in `.env.local` and open a workspace to build its complete
-snapshot, or run `npm run snapshot -- userdata/<workspace>/<sha> snapshot.json`.
-The result is `{ analysis, interpretation }`; both are required. Analysis results,
-interpretations, and completed AI batches are cached in `userdata/.snapshots/`.
-The individual `analyze` and `interpret` commands remain available for debugging.
-See [`src/interpreter/README.md`](src/interpreter/README.md) for the schema, prompts,
-model selection, dry runs, and cache behavior.
