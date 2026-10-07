@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  deserializeSystemModel,
+  serializeSystemModel,
+  systemModelSchema,
+} from "./schema.ts";
+
+// Synthetic contract example, independent of any particular repository.
+function example() {
+  return {
+    schemaVersion: 1,
+    repository: { name: "example", commit: "abc123" },
+    apps: [{ id: "staff", name: "Staff", visibility: "internal" }],
+    tables: [
+      { id: "payments", name: "Payments" },
+    ],
+    integrations: [{ id: "email", name: "Email", category: "email" }],
+    endpoints: [{ id: "send-receipt", name: "Send receipt", appId: "staff" }],
+    relationships: [
+      {
+        id: "payment-access", kind: "table-access",
+        endpointId: "send-receipt", tableId: "payments",
+        operations: ["read", "write"],
+        evidence: [{ path: "apps/staff/src/api/send-receipt.ts", line: 12 }],
+      },
+      {
+        id: "email-call", kind: "integration-use",
+        endpointId: "send-receipt", integrationId: "email",
+      },
+    ],
+  };
+}
+
+test("normalizes and round-trips a model with every relationship kind", () => {
+  const model = systemModelSchema.parse(example());
+  assert.deepEqual(model.diagnostics, []);
+  assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
+});
+
+test("accepts partial findings, unknown classifications, and diagnostics", () => {
+  const input = example();
+  input.apps[0].visibility = "unknown";
+  input.relationships[0].operations = ["unknown"];
+  input.diagnostics = [{ severity: "warning", code: "dynamic-sql", message: "Unable to resolve a query" }];
+  assert.equal(systemModelSchema.parse(input).diagnostics.length, 1);
+  assert.equal(systemModelSchema.safeParse({
+    schemaVersion: 1, repository: { name: "empty" },
+    apps: [], tables: [], integrations: [], endpoints: [], relationships: [],
+  }).success, true);
+});
+
+test("rejects dangling ownership, endpoints, and usage targets", () => {
+  const mutations = [
+    (m) => { m.endpoints[0].appId = "missing"; },
+    (m) => { m.relationships[0].endpointId = "missing"; },
+    (m) => { m.relationships[0].tableId = "missing"; },
+    (m) => { m.relationships[1].integrationId = "missing"; },
+    (m) => { m.relationships[1].endpointId = "missing"; },
+  ];
+  for (const mutate of mutations) {
+    const input = example();
+    mutate(input);
+    assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+});
+
+test("rejects duplicate IDs", () => {
+  for (const key of ["apps", "tables", "integrations", "endpoints", "relationships"]) {
+    const input = example();
+    input[key].push(input[key][0]);
+    assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+});
+
+test("rejects fields, app-level access, and configured integration relationships", () => {
+  const mutations = [
+    (m) => { m.tables[0].fields = [{ name: "id" }]; },
+    (m) => {
+      delete m.relationships[0].endpointId;
+      m.relationships[0].source = { kind: "app", id: "staff" };
+    },
+    (m) => {
+      delete m.relationships[1].endpointId;
+      m.relationships[1].source = { kind: "app", id: "staff" };
+      m.relationships[1].usage = "configured";
+    },
+    (m) => { m.relationships[1].usage = "configured"; },
+    (m) => { m.relationships[0].endpointId = "staff"; },
+    (m) => { m.relationships.push({ id: "reference", kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }); },
+  ];
+  for (const mutate of mutations) {
+    const input = example();
+    mutate(input);
+    assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+});
+
+test("rejects malformed, contradictory, and unsupported serialized data", () => {
+  for (const operations of [[], ["drop"], ["read", "read"], ["read", "unknown"]]) {
+    const input = example();
+    input.relationships[0].operations = operations;
+    assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+  assert.throws(() => deserializeSystemModel("not JSON"));
+  assert.throws(() => deserializeSystemModel(JSON.stringify({ ...example(), schemaVersion: 2 })));
+  assert.equal(systemModelSchema.safeParse({ ...example(), unexpected: true }).success, false);
+  assert.throws(() => serializeSystemModel({ ...example(), schemaVersion: 2 }));
+});
+
+test("requires portable evidence paths and positive one-based line numbers", () => {
+  for (const path of ["/tmp/repo/file.ts", "../file.ts", "apps/../../file.ts", "C:/repo/file.ts", "apps\\file.ts"]) {
+    const input = example();
+    input.relationships[0].evidence[0].path = path;
+    assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+  const input = example();
+  input.relationships[0].evidence[0].line = 0;
+  assert.equal(systemModelSchema.safeParse(input).success, false);
+});
