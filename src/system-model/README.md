@@ -13,7 +13,7 @@ The model describes a single repository snapshot and its shared database:
   category are open strings so new services require no schema change. Include only
   integrations used by endpoints; ignore configured-but-unused services.
 - **Endpoints** belong to apps and provide a first level of drill-down.
-- **Relationships** describe endpoint table access (read/write/unknown) and
+- **Relationships** describe endpoint table access (read/join/create/update/delete/unknown) and
   endpoint integration calls.
 - **Diagnostics** report unsupported patterns, unresolved SQL, or other gaps.
 
@@ -21,6 +21,15 @@ App-to-endpoint ownership is stored once in `endpoint.appId`. Table access and
 integration calls always originate from an endpoint, identified by `endpointId`.
 The viewer can aggregate endpoint findings by app for its overview. Integration
 relationships represent observed calls and need no separate usage classification.
+
+Table operations are the union of observed accesses. `read` covers SDK reads and
+SQL `FROM` sources; `join` identifies physical tables in explicit SQL joins.
+Each CTE/subquery keeps its own `FROM`/`JOIN` roles. `create` includes bulk creates;
+`update` and `delete` describe their corresponding SDK calls. A table may have
+both `read` and `join`, along with any mutations. `unknown` is used only when no
+known operation was observed. The CRUD view uses R/J/C/U/D and filters each
+operation separately; integration calls use a dot. Regenerate older analyzer JSON
+containing the former `write` operation; it is no longer accepted by the contract.
 
 Endpoints, integrations, relationships, and diagnostics can carry `evidence` as
 plain debugging strings, typically `packages/shared/server/settings.ts:234`.

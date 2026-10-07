@@ -6,6 +6,9 @@ const nameSchema = z.string().min(1);
 /** Opaque debugging strings, typically repository-relative path:line references. */
 const evidenceSchema = z.array(z.string()).default([]);
 
+export const tableOperationSchema = z.enum(["read", "join", "create", "update", "delete", "unknown"]);
+export type TableOperation = z.infer<typeof tableOperationSchema>;
+
 export const appSchema = z.strictObject({
   id: idSchema,
   name: nameSchema,
@@ -42,8 +45,8 @@ export const relationshipSchema = z.discriminatedUnion("kind", [
     kind: z.literal("table-access"),
     endpointId: idSchema,
     tableId: idSchema,
-    // A query can both read and write. Unknown means access was found but not classified.
-    operations: z.array(z.enum(["read", "write", "unknown"])).min(1)
+    // Union of observed operations. Unknown means access was found but not classified.
+    operations: z.array(tableOperationSchema).min(1)
       .refine((values) => new Set(values).size === values.length, "Duplicate operations")
       .refine((values) => !values.includes("unknown") || values.length === 1,
         "Unknown cannot be combined with known operations"),

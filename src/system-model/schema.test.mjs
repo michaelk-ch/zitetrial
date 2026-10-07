@@ -21,7 +21,7 @@ function example() {
       {
         kind: "table-access",
         endpointId: "send-receipt", tableId: "payments",
-        operations: ["read", "write"],
+        operations: ["read", "join", "create", "update", "delete"],
         evidence: ["apps/staff/src/api/send-receipt.ts:12"],
       },
       {
@@ -101,7 +101,7 @@ test("rejects fields, app-level access, and configured integration relationships
 });
 
 test("rejects malformed, contradictory, and unsupported serialized data", () => {
-  for (const operations of [[], ["drop"], ["read", "read"], ["read", "unknown"]]) {
+  for (const operations of [[], ["write"], ["drop"], ["read", "read"], ["read", "unknown"]]) {
     const input = example();
     input.relationships[0].operations = operations;
     assert.equal(systemModelSchema.safeParse(input).success, false);

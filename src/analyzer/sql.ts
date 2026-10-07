@@ -1,14 +1,19 @@
 import sqlParser from "node-sql-parser";
+import type { TableOperation } from "../system-model/schema.ts";
 import { DYNAMIC } from "./syntax.ts";
 
 const parser = new sqlParser.Parser();
 const tokensPattern = /--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|\$\d+|[A-Za-z_][\w$]*|[^\s]/g;
 
-export type SqlTables = { names: string[]; partial: boolean; failed: boolean };
+type SqlAccess = { name: string; operation: Extract<TableOperation, "read" | "join"> };
+export type SqlTables = { accesses: SqlAccess[]; partial: boolean; failed: boolean };
 
 /** Zite SQL is read-only PostgreSQL. CTE aliases are not physical tables. */
 export function sqlTables(query: string): SqlTables {
   const partial = query.includes(DYNAMIC);
+  const accesses = new Map<string, SqlAccess>();
+  const add = (name: string, operation: SqlAccess["operation"]) =>
+    accesses.set(JSON.stringify([name, operation]), { name, operation });
   // These parser grammar gaps don't affect table discovery: parameter values,
   // LIKE vs equality, and the PostgreSQL-legal alias `at`. Keep operands intact,
   // including subqueries, and never rewrite comments or quoted text.
@@ -30,7 +35,6 @@ export function sqlTables(query: string): SqlTables {
   });
   try {
     const ast = parser.astify(normalized, { database: "Postgresql" });
-    const names = new Set<string>();
     // Walk FROM nodes with lexical CTE scope; tableList also includes CTE aliases.
     function collect(value: unknown, inherited = new Set<string>()) {
       if (!value || typeof value !== "object") return;
@@ -46,23 +50,26 @@ export function sqlTables(query: string): SqlTables {
       }
       if (typeof record.table === "string" && "db" in record &&
         (record.db || !aliases.has(record.table)) && !record.table.includes(DYNAMIC)) {
-        names.add(record.table);
+        // Classify physical tables in their own query block. CTEs/subqueries
+        // retain their internal FROM/JOIN roles, regardless of outer usage.
+        add(record.table, record.join ? "join" : "read");
       }
       for (const [key, child] of Object.entries(record)) if (key !== "with") collect(child, aliases);
     }
     collect(ast);
-    return { names: [...names], partial, failed: false };
+    return { accesses: [...accesses.values()], partial, failed: false };
   } catch {
     // Incomplete filters often prevent parsing an otherwise clear FROM/JOIN.
     // Tokenize first so comments and string literals cannot invent table access.
-    const tokens = query.match(tokensPattern) ?? [];
-    const names = new Set<string>();
+    const tokens = (query.match(tokensPattern) ?? []).filter((token) => !/^(--|\/\*)/.test(token));
     for (let i = 0; i < tokens.length - 1; i++) {
       if (!/^(from|join)$/i.test(tokens[i])) continue;
       const token = tokens[i + 1];
       // Only quoted identifiers: unquoted tokens can be CTEs or SQL functions.
-      if (token.startsWith('"') && !token.includes(DYNAMIC)) names.add(token.slice(1, -1).replaceAll('""', '"'));
+      if (token.startsWith('"') && !token.includes(DYNAMIC)) {
+        add(token.slice(1, -1).replaceAll('""', '"'), /^join$/i.test(tokens[i]) ? "join" : "read");
+      }
     }
-    return { names: [...names], partial, failed: true };
+    return { accesses: [...accesses.values()], partial, failed: true };
   }
 }

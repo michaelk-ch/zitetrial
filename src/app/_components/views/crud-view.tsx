@@ -14,25 +14,33 @@ type Condition = Operation | "any";
 const byName = (a: { name: string; id: string }, b: { name: string; id: string }) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 const isColumn = (filter: ColumnFilter, column: Column) => filter.kind === column.kind && filter.id === column.entity.id;
 
-const conditions: [Condition, string][] = [["any", "accesses"], ["read", "reads"], ["write", "writes"], ["unknown", "unclassified"]];
-const verbs: Record<Operation, string> = { read: "reads", write: "writes", unknown: "accesses (unclassified)" };
+const conditions: [Condition, string][] = [
+  ["any", "accesses"], ["read", "reads"], ["join", "joins"],
+  ["create", "creates in"], ["update", "updates"], ["delete", "deletes from"], ["unknown", "unclassified"],
+];
+const verbs: Record<Operation, string> = {
+  read: "reads", join: "joins", create: "creates in", update: "updates", delete: "deletes from", unknown: "accesses (unclassified)",
+};
 const tones = {
-  write: "bg-[#fbf0e5] text-[#8a4a12]",
+  create: "bg-[#e9f2fc] text-[#32618b]",
+  update: "bg-[#fbf0e5] text-[#8a4a12]",
+  delete: "bg-[#fbecec] text-[#963f3f]",
   read: "bg-[#eaf4ee] text-[#2f6449]",
+  join: "bg-[#edf4f4] text-[#426c70]",
   unknown: "bg-[#f1f1f1] text-muted",
   call: "bg-[#eeeffa] text-[#464b94]",
 };
 
 const control = "h-8 rounded-md border border-line-strong bg-white px-2 text-xs";
-const dataCell = "w-10 min-w-10 border-r border-b border-line p-0 text-center font-mono text-[11px]";
+const dataCell = "w-12 min-w-12 border-r border-b border-line p-0 text-center font-mono text-[11px]";
 
 function cell(usage: Usage, column: Column, rowName: string) {
   if (column.kind === "integration") {
-    return usage.integrations.has(column.entity.id) ? { label: "C", tone: tones.call, title: `${rowName} calls ${column.entity.name}` } : null;
+    return usage.integrations.has(column.entity.id) ? { label: "●", tone: tones.call, title: `${rowName} calls ${column.entity.name}` } : null;
   }
   const operations = usage.access.get(column.entity.id);
   if (!operations?.size) return null;
-  const tone = operations.has("write") ? tones.write : operations.has("read") ? tones.read : tones.unknown;
+  const tone = tones[(["delete", "update", "create", "read", "join", "unknown"] as const).find((op) => operations.has(op))!];
   return { label: accessLabel(operations), tone, title: `${rowName} ${[...operations].map((op) => verbs[op]).join(", ")} ${column.entity.name}` };
 }
 
@@ -50,7 +58,8 @@ function Cells({ usage, columns, rowName, strong }: { usage: Usage; columns: Col
 }
 
 export default function CrudView({ model }: { model: SystemModel }) {
-  const groups = useMemo(() => buildAccessMatrix(model), [model]);
+  const [showJoins, setShowJoins] = useState(false);
+  const groups = useMemo(() => buildAccessMatrix(model, { showJoins }), [model, showJoins]);
   const columns = useMemo<Column[]>(() => [
     ...[...model.tables].sort(byName).map((entity) => ({ kind: "table" as const, entity })),
     ...[...model.integrations].sort(byName).map((entity) => ({ kind: "integration" as const, entity })),
@@ -94,7 +103,11 @@ export default function CrudView({ model }: { model: SystemModel }) {
       title="Table & integration access"
       meta={
         <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {([["R", "read", tones.read], ["W", "write", tones.write], ["?", "unclassified", tones.unknown], ["C", "called", tones.call]] as const).map(([label, text, tone]) => (
+          {([
+            ["R", "read", tones.read], ["J", "join", tones.join], ["C", "create", tones.create],
+            ["U", "update", tones.update], ["D", "delete", tones.delete],
+            ["?", "unclassified", tones.unknown], ["●", "called", tones.call],
+          ] as const).filter(([label]) => showJoins || label !== "J").map(([label, text, tone]) => (
             <span key={label} className="inline-flex items-center gap-1.5">
               <span className={`inline-grid size-5 place-items-center rounded font-mono text-[11px] font-semibold ${tone}`}>{label}</span>{text}
             </span>
@@ -128,13 +141,11 @@ export default function CrudView({ model }: { model: SystemModel }) {
           <input type="checkbox" checked={hideUnused} onChange={(event) => setHideUnused(event.target.checked)} className="accent-[#385e4b]" />
           Hide unused columns{hideUnused && columns.length > visibleColumns.length && <span className="text-faint">({columns.length - visibleColumns.length} hidden)</span>}
         </label>
-        <div className="ml-auto flex items-center gap-3 text-xs text-muted">
-          <span aria-live="polite">{filtering ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
-          <span className="flex overflow-hidden rounded-md border border-line-strong">
-            <button type="button" onClick={() => setCollapsed(new Set())} className="cursor-pointer bg-white px-2.5 py-1.5 hover:bg-subtle hover:text-ink">Expand all</button>
-            <button type="button" onClick={() => setCollapsed(new Set(groups.map((group) => group.app.id)))} className="cursor-pointer border-l border-line-strong bg-white px-2.5 py-1.5 hover:bg-subtle hover:text-ink">Collapse all</button>
-          </span>
-        </div>
+        <label className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
+          <input type="checkbox" checked={showJoins} onChange={(event) => setShowJoins(event.target.checked)} className="accent-[#385e4b]" />
+          Show joins
+        </label>
+        <span aria-live="polite" className="ml-auto text-xs text-muted">{filtering ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
       </div>
 
       {filtering && (
@@ -149,7 +160,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
                   aria-label={`Condition for ${nameOf(filter)}`}
                   className="cursor-pointer rounded bg-transparent text-muted hover:text-ink"
                 >
-                  {conditions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  {conditions.map(([value, label]) => <option key={value} value={value} disabled={value === "join" && !showJoins}>{label}</option>)}
                 </select>
               ) : <span className="text-muted">call</span>}
               <span className="font-medium">{nameOf(filter)}</span>
@@ -177,7 +188,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
                 const active = filters.some((filter) => isColumn(filter, column));
                 const divider = column.kind === "integration" && visibleColumns[index - 1]?.kind !== "integration" ? "border-l border-l-line-strong" : "";
                 return (
-                  <th key={`${column.kind}:${column.entity.id}`} scope="col" className={`sticky top-7 z-20 h-[136px] w-10 min-w-10 border-r border-b border-line p-0 align-bottom font-medium ${divider} ${active ? "bg-[#e7efe9]" : column.kind === "integration" ? "bg-[#f6f6fb]" : "bg-inherit"}`}>
+                  <th key={`${column.kind}:${column.entity.id}`} scope="col" className={`sticky top-7 z-20 h-[136px] w-12 min-w-12 border-r border-b border-line p-0 align-bottom font-medium ${divider} ${active ? "bg-[#e7efe9]" : column.kind === "integration" ? "bg-[#f6f6fb]" : "bg-inherit"}`}>
                     <button
                       type="button"
                       onClick={() => toggleColumnFilter(column)}

@@ -21,9 +21,9 @@ const model = systemModelSchema.parse({
   integrations: [{ id: "email", name: "Email" }, { id: "stripe", name: "Stripe" }],
   relationships: [
     { kind: "table-access", endpointId: "read", tableId: "customer", operations: ["read"] },
-    { kind: "table-access", endpointId: "write", tableId: "customer", operations: ["read", "write"] },
+    { kind: "table-access", endpointId: "write", tableId: "customer", operations: ["read", "join", "create", "update", "delete"] },
     { kind: "table-access", endpointId: "unknown", tableId: "customer", operations: ["unknown"] },
-    { kind: "table-access", endpointId: "other", tableId: "deal", operations: ["write"] },
+    { kind: "table-access", endpointId: "other", tableId: "deal", operations: ["create"] },
     { kind: "integration-use", endpointId: "unused", integrationId: "email" },
     { kind: "integration-use", endpointId: "write", integrationId: "email" },
   ],
@@ -32,11 +32,11 @@ const ids = (groups) => groups.map((group) => [group.app.id, group.endpoints.map
 
 test("app access unions endpoint operations without leaking across endpoints or apps", () => {
   const [a, b, empty] = buildAccessMatrix(model);
-  assert.equal(accessLabel(a.access.get("customer")), "RW?");
+  assert.equal(accessLabel(a.access.get("customer")), "RJCUD?");
   assert.equal(accessLabel(a.endpoints.find(row => row.endpoint.id === "read").access.get("customer")), "R");
   assert.equal(accessLabel(a.access.get("deal")), "");
   assert.equal(accessLabel(b.access.get("customer")), "");
-  assert.equal(accessLabel(b.access.get("deal")), "W");
+  assert.equal(accessLabel(b.access.get("deal")), "C");
   assert.equal(b.endpoints.find(row => row.endpoint.id === "unused").access.size, 0);
   assert.equal(empty.endpoints.length, 0);
   assert.equal(empty.access.size, 0);
@@ -51,17 +51,28 @@ test("integration calls are tracked per endpoint and unioned per app", () => {
   assert.equal(empty.integrations.size, 0);
 });
 
+test("filters distinguish joins and each mutation from direct reads", () => {
+  const groups = buildAccessMatrix(model);
+  for (const condition of ["join", "create", "update", "delete"]) {
+    assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "customer", condition }] })), [["a", ["write"]]]);
+  }
+  assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "deal", condition: "update" }] })), []);
+  assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "customer", condition: "read" }] })), [["a", ["read", "write"]]]);
+  assert.equal(accessLabel(new Set(["delete", "join", "update", "create", "read"])), "RJCUD");
+  assert.equal(accessLabel(new Set(["join"])), "J");
+});
+
 test("column filters keep only matching endpoints and drop apps without matches", () => {
   const groups = buildAccessMatrix(model);
   assert.deepEqual(ids(filterMatrix(groups, {})), ids(groups));
-  assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "customer", condition: "write" }] })), [["a", ["write"]]]);
+  assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "customer", condition: "update" }] })), [["a", ["write"]]]);
   assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "table", id: "customer", condition: "any" }] })), [["a", ["read", "unknown", "write"]]]);
   assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "integration", id: "email" }] })), [["a", ["write"]], ["b", ["unused"]]]);
   // Filters combine with AND; a filter on an unused integration matches nothing.
   assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "integration", id: "email" }, { kind: "table", id: "customer", condition: "read" }] })), [["a", ["write"]]]);
   assert.deepEqual(ids(filterMatrix(groups, { filters: [{ kind: "integration", id: "stripe" }] })), []);
   // Aggregates still describe the whole app.
-  assert.equal(accessLabel(filterMatrix(groups, { filters: [{ kind: "integration", id: "email" }] })[0].access.get("customer")), "RW?");
+  assert.equal(accessLabel(filterMatrix(groups, { filters: [{ kind: "integration", id: "email" }] })[0].access.get("customer")), "RJCUD?");
 });
 
 test("the text query matches endpoint names, or app names to keep all their endpoints", () => {

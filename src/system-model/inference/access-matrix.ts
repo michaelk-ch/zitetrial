@@ -1,6 +1,6 @@
-import type { App, Endpoint, Relationship, SystemModel } from "../schema.ts";
+import type { App, Endpoint, SystemModel, TableOperation } from "../schema.ts";
 
-export type Operation = Extract<Relationship, { kind: "table-access" }>["operations"][number];
+export type Operation = TableOperation;
 type Access = Map<string, Set<Operation>>;
 /** Observed table operations and called integration IDs for one endpoint, or an app's union. */
 export type Usage = { access: Access; integrations: Set<string> };
@@ -20,13 +20,15 @@ function merge(access: Access, tableId: string, operations: Iterable<Operation>)
   access.set(tableId, combined);
 }
 
-/** App cells are the union of all endpoint operations and integration calls, including unknown access. */
-export function buildAccessMatrix(model: SystemModel): MatrixGroup[] {
+/** App cells union endpoint operations. Hidden joins are excluded before filtering and aggregation. */
+export function buildAccessMatrix(model: SystemModel, { showJoins = true }: { showJoins?: boolean } = {}): MatrixGroup[] {
   const byEndpoint = new Map<string, Usage>();
   for (const relationship of model.relationships) {
     const usage = byEndpoint.get(relationship.endpointId) ?? emptyUsage();
-    if (relationship.kind === "table-access") merge(usage.access, relationship.tableId, relationship.operations);
-    else usage.integrations.add(relationship.integrationId);
+    if (relationship.kind === "table-access") {
+      const operations = relationship.operations.filter((operation) => showJoins || operation !== "join");
+      if (operations.length) merge(usage.access, relationship.tableId, operations);
+    } else usage.integrations.add(relationship.integrationId);
     byEndpoint.set(relationship.endpointId, usage);
   }
   const byApp = new Map<string, MatrixRow[]>();
@@ -84,8 +86,8 @@ export function usedColumns(groups: MatrixGroup[]): { tables: Set<string>; integ
   return { tables, integrations };
 }
 
-/** Compact cell label, e.g. "RW" or "?". */
+/** Compact cell label in a stable order, e.g. "RU" or "RJCUD". */
 export function accessLabel(operations?: Set<Operation>): string {
-  return ([ ["read", "R"], ["write", "W"], ["unknown", "?"] ] as const)
+  return ([ ["read", "R"], ["join", "J"], ["create", "C"], ["update", "U"], ["delete", "D"], ["unknown", "?"] ] as const)
     .filter(([operation]) => operations?.has(operation)).map(([, label]) => label).join("");
 }

@@ -39,13 +39,21 @@ and set a nonzero exit status; partial-analysis diagnostics are part of the mode
   findings. Resolve called methods in static object/array registries, including
   array spreads, computed indexes, tuple destructuring, `for...of` loops, and
   registries returned by argument-free functions.
-- Classify `findAll`/`findOne` as reads and `create`/`update`/`delete`/`bulkCreate`
-  as writes. Unknown methods remain `unknown` unless a known operation also exists.
+- Classify `findAll`/`findOne` as `read`, `create`/`bulkCreate` as `create`,
+  `update` as `update`, and `delete` as `delete`. Unknown methods remain `unknown`
+  unless a known operation also exists. Repeated access unions distinct operations.
   Computed table names can resolve through finite string-literal types, including
   TypeScript's branch narrowing. A cast at the access site alone is not evidence
   of the table name; declared types elsewhere are assumed accurate.
 - Parse read-only PostgreSQL queries, including joins, subqueries, CTEs, literal
-  constants, and template fragments. SQL table names are PascalCase SDK names,
+  constants, and template fragments. Physical tables in `FROM` are `read`; those
+  introduced by an explicit `JOIN` are `join` (including outer and cross joins).
+  A table can have both roles across queries or aliases. CTEs and subqueries are
+  classified within their own query block; an outer join to a CTE/derived table
+  does not change its internal roles. Comma-separated sources remain `read`.
+  These are SQL roles, not proof of an endpoint's primary business entity or a
+  reference lookup. Separate SDK lookups remain `read`.
+  SQL table names are PascalCase SDK names,
   while client properties are camelCase SDK names; display labels are not used
   for lookup. Follow SQL fragments selected from static maps and local arrays
   accumulated with direct `push` calls before `join`. Only values flowing into
@@ -79,8 +87,9 @@ interpret general query builders, model module initialization, or resolve arbitr
 dynamic dispatch. Array mutation through aliases or helper functions is not tracked.
 
 Runtime SQL fragments and computed table names produce diagnostics. When a
-query cannot be fully parsed, recognizable quoted `FROM`/`JOIN` references are
-retained. Tables introduced only by an unresolved fragment can be missed.
+query cannot be fully parsed, recognizable quoted `FROM`/`JOIN` references and
+their respective `read`/`join` roles are retained. Tables introduced only by an
+unresolved fragment can be missed.
 SQL template expansion is capped at 128 combinations, with a `sql-expansion-limit`
 diagnostic if it exceeds that limit. Sampling covers both sides of a combination
 before filling the remaining budget. Conditional array pushes are combined as

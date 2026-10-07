@@ -79,7 +79,7 @@ test("follows called shared exports, aliases, re-exports, callbacks, and recursi
   assert.deepEqual(access[0].operations, ["read"]);
   assert.equal(access[0].evidence[0], "packages/shared/data.ts:6");
   const update = model.relationships.find((r) => r.endpointId.includes("update") && r.kind === "table-access");
-  assert.deepEqual(update.operations, ["read", "write"]);
+  assert.deepEqual(update.operations, ["read", "update"]);
   assert.deepEqual(model.integrations.map((i) => i.provider), ["zite_email"]);
   assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
   assert.deepEqual(await analyzeRepository(root, model.repository), model);
@@ -103,20 +103,75 @@ test("extracts SQL joins, subqueries, CTEs, and imported fragments; reports part
   });
   const model = await analyzeRepository(root);
   assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
-    ["table:customers", ["read"]], ["table:orderItems", ["read"]],
+    ["table:customers", ["join", "read"]], ["table:orderItems", ["read"]],
   ]);
   assert.deepEqual(model.diagnostics.map((d) => d.code).sort(), [
     "dynamic-sql", "dynamic-table", "unknown-db-method", "unresolved-table",
   ]);
   assert.ok(model.relationships.every((r) => r.evidence.every((e) => typeof e === "string")));
-  assert.deepEqual(sqlTables('SELECT * FROM "Customers" WHERE EXISTS (SELECT 1 FROM "OrderItems")').names.sort(), ["Customers", "OrderItems"]);
+  assert.deepEqual(sqlTables('SELECT * FROM "Customers" WHERE EXISTS (SELECT 1 FROM "OrderItems")').accesses.map(({ name }) => name).sort(), ["Customers", "OrderItems"]);
   assert.deepEqual(sqlTables('SELECT * FROM "Customers" WHERE id::text = ANY($1::text[])'), {
-    names: ["Customers"], partial: false, failed: false,
+    accesses: [{ name: "Customers", operation: "read" }], partial: false, failed: false,
   });
-  assert.deepEqual(sqlTables('WITH "Customers" AS (SELECT * FROM "Customers") SELECT * FROM "Customers"').names, ["Customers"]);
+  assert.deepEqual(sqlTables('WITH "Customers" AS (SELECT * FROM "Customers") SELECT * FROM "Customers"').accesses.map(({ name }) => name), ["Customers"]);
   const broken = sqlTables(`SELECT 'FROM "Unused"' FROM "Customers" WHERE ??? /* JOIN "Unused" */`);
   assert.equal(broken.failed, true);
-  assert.deepEqual(broken.names, ["Customers"]);
+  assert.deepEqual(broken.accesses.map(({ name }) => name), ["Customers"]);
+});
+
+test("preserves CRUD operations and combines distinct accesses to the same table", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/mutate.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite as db } from 'zitejs/db';
+      export default createEndpoint({ execute: async () => {
+        await db.customers.findOne({});
+        await db.customers.findAll({});
+        await db.customers.create({});
+        await db.customers.bulkCreate({});
+        await db.customers.update({});
+        await db.customers.delete({});
+        await db.customers.unrecognized({});
+        await db.sql({ query: 'SELECT * FROM "OrderItems" JOIN "Customers" ON true' });
+        await db.unused.unrecognized({});
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+    ["table:customers", ["create", "delete", "join", "read", "update"]],
+    ["table:orderItems", ["read"]],
+    ["table:unused", ["unknown"]],
+  ]);
+  assert.equal(model.relationships[0].evidence.length, 8);
+  assert.deepEqual(model.diagnostics.map((d) => d.code), ["unknown-db-method", "unknown-db-method"]);
+});
+
+test("SQL classifies FROM and explicit JOIN separately in each query block", () => {
+  const read = (name) => ({ name, operation: "read" });
+  const join = (name) => ({ name, operation: "join" });
+  for (const keyword of ["JOIN", "LEFT JOIN", "RIGHT JOIN", "FULL JOIN", "INNER JOIN", "CROSS JOIN"]) {
+    const result = sqlTables(`SELECT * FROM "OrderItems" i ${keyword} "Customers" c ${keyword === "CROSS JOIN" ? "" : 'ON c.id = i."customerId"'}`);
+    assert.equal(result.failed, false, keyword);
+    assert.deepEqual(result.accesses, [read("OrderItems"), join("Customers")]);
+  }
+  for (const [query, expected] of [
+    ['SELECT * FROM "Customers" c JOIN "Customers" parent ON true JOIN "Customers" owner ON true', [read("Customers"), join("Customers")]],
+    ['SELECT * FROM "OrderItems", "Customers"', [read("OrderItems"), read("Customers")]],
+    ['SELECT * FROM "OrderItems" WHERE EXISTS (SELECT 1 FROM "Customers" c JOIN "Unused" u ON true)', [read("OrderItems"), read("Customers"), join("Unused")]],
+    ['WITH c AS (SELECT * FROM "Customers" JOIN "Unused" ON true) SELECT * FROM "OrderItems" JOIN c ON true', [read("Customers"), join("Unused"), read("OrderItems")]],
+    ['SELECT * FROM "OrderItems" JOIN (SELECT * FROM "Customers" JOIN "Unused" ON true) c ON true', [read("OrderItems"), read("Customers"), join("Unused")]],
+    ['SELECT * FROM "OrderItems" UNION ALL SELECT * FROM "Customers" JOIN "Unused" ON true', [read("OrderItems"), read("Customers"), join("Unused")]],
+    ['SELECT * FROM "public"."OrderItems" JOIN "public"."Customers" ON true', [read("OrderItems"), join("Customers")]],
+    ['WITH RECURSIVE c AS (SELECT * FROM "Customers" UNION ALL SELECT u.* FROM "Unused" u JOIN c ON true) SELECT * FROM c', [read("Customers"), read("Unused")]],
+  ]) {
+    const result = sqlTables(query);
+    assert.equal(result.failed, false, query);
+    assert.deepEqual(result.accesses, expected, query);
+  }
+  const broken = sqlTables(`SELECT 'JOIN "Unused"' FROM /* source */ "OrderItems" JOIN "Customers" ON true WHERE ??? -- FROM "Unused"`);
+  assert.equal(broken.failed, true);
+  assert.deepEqual(broken.accesses, [read("OrderItems"), join("Customers")]);
 });
 
 test("observes SDK method calls through factories, excluding constructors, token checks, and PDF", async (t) => {
@@ -187,7 +242,7 @@ test("expands SQL helpers, bound methods, returned clauses, tuple loops, and lit
   const model = await analyzeRepository(root);
   assert.deepEqual(model.diagnostics, []);
   assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
-    ['table:customers', ['read', 'write']], ['table:orderItems', ['read', 'write']],
+    ['table:customers', ['delete', 'read']], ['table:orderItems', ['delete', 'read']],
   ]);
 });
 
@@ -203,7 +258,7 @@ test("normalizes PostgreSQL grammar gaps without losing operand tables or readin
     const result = sqlTables(query);
     assert.equal(result.failed, false, query);
     assert.equal(result.partial, false);
-    assert.deepEqual(result.names.sort(), query.includes('FROM "OrderItems"') ? ['Customers', 'OrderItems'] : ['Customers']);
+    assert.deepEqual(result.accesses.map(({ name }) => name).sort(), query.includes('FROM "OrderItems"') ? ['Customers', 'OrderItems'] : ['Customers']);
   }
 });
 
@@ -296,7 +351,7 @@ test("recovers SQL from conditional pushes and selected plans without scanning u
   const model = await analyzeRepository(root);
   const access = (name) => model.relationships.filter((r) => r.endpointId.endsWith('/' + name)).map((r) => [r.tableId, r.operations]);
   for (const name of ["search", "export"]) assert.deepEqual(access(name), [
-    ["table:customers", ["read"]], ["table:orderItems", ["read"]],
+    ["table:customers", name === "export" ? ["join", "read"] : ["read"]], ["table:orderItems", ["read"]],
   ]);
   assert.deepEqual(access("fixedExport"), [["table:customers", ["read"]]]);
   assert.ok(model.diagnostics.some((d) => d.code === "dynamic-sql" && d.evidence[0].startsWith('apps/staff/src/api/export.ts:')));
@@ -324,7 +379,7 @@ test("resolves finite computed table names with branch-specific mutation evidenc
   });
   const model = await analyzeRepository(root);
   assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
-    ["table:customers", ["write"]], ["table:orderItems", ["write"]],
+    ["table:customers", ["update"]], ["table:orderItems", ["delete"]],
   ]);
   assert.equal(model.relationships[0].evidence[0], "apps/staff/src/api/remove.ts:7");
   assert.equal(model.relationships[1].evidence[0], "apps/staff/src/api/remove.ts:9");
@@ -371,7 +426,7 @@ test("follows only selected methods in imported phase arrays, including spreads 
     const access = model.relationships.filter((r) => r.endpointId === endpoint.id);
     const expected = endpoint.name === "seedFirst" ? ["table:customers"] : ["table:customers", "table:orderItems"];
     assert.deepEqual(access.map((r) => r.tableId), expected);
-    assert.ok(access.every((r) => r.operations.join() === 'write'));
+    assert.ok(access.every((r) => r.operations.join() === 'create'));
     assert.ok(access.every((r) => r.evidence[0].startsWith('packages/shared/phases.ts:')));
   }
 });
@@ -408,16 +463,19 @@ for (const [name, tables, endpoints, providers] of [
       const access = (endpoint, table) => model.relationships.find((r) =>
         r.endpointId === `endpoint:apps/crm/src/api/${endpoint}` && r.tableId === `table:${table}`);
       for (const table of ["companies", "contacts", "deals", "leads"]) {
-        assert.deepEqual(access("search", table)?.operations, ["read"], `search reads ${table}`);
-        assert.deepEqual(access("seedWorkspace", table)?.operations, ["read", "write"], `seedWorkspace writes ${table}`);
+        assert.deepEqual(access("search", table)?.operations, table === "companies" ? ["join", "read"] : ["read"], `search accesses ${table}`);
+        const seeded = table === "deals" ? ["create", "read"] : table === "leads" ? ["create", "read", "update"] : ["create", "join", "read", "update"];
+        assert.deepEqual(access("seedWorkspace", table)?.operations, seeded, `seedWorkspace accesses ${table}`);
       }
       for (const table of ["companies", "contacts", "deals", "leads", "tasks", "activities", "quotes", "pipelines", "stages"]) {
-        assert.deepEqual(access("exportRecords", table)?.operations, ["read"], `exportRecords reads ${table}`);
+        const exported = ["pipelines", "stages"].includes(table) ? ["join"] : ["companies", "contacts", "deals"].includes(table) ? ["join", "read"] : ["read"];
+        assert.deepEqual(access("exportRecords", table)?.operations, exported, `exportRecords accesses ${table}`);
       }
       for (const table of ["dealContacts", "lineItems", "stageChanges", "activities", "tasks", "quotes"]) {
         const relationship = access("deleteDeals", table);
-        assert.deepEqual(relationship?.operations, ["read", "write"], `deleteDeals mutates ${table}`);
-        const line = ["activities", "tasks", "quotes"].includes(table) ? 49 : 51;
+        const updated = ["activities", "tasks", "quotes"].includes(table);
+        assert.deepEqual(relationship?.operations, updated ? ["read", "update"] : ["delete", "read"], `deleteDeals mutates ${table}`);
+        const line = updated ? 49 : 51;
         assert.ok(relationship.evidence.includes(`apps/crm/src/api/deleteDeals.ts:${line}`));
       }
       assert.ok(!model.relationships.some((r) => r.endpointId.endsWith('/seedWorkspace') && r.kind === 'integration-use'));
@@ -425,12 +483,12 @@ for (const [name, tables, endpoints, providers] of [
     if (name === "grant-management") {
       for (const table of ['submissions', 'applicants', 'reviews', 'submissionLabels', 'messages', 'tasks']) {
         for (const endpoint of ['exportSubmissions', 'listSubmissions']) assert.ok(model.relationships.some((r) =>
-          r.endpointId.endsWith('/' + endpoint) && r.tableId === 'table:' + table && r.operations.includes('read')), `${endpoint} reads ${table}`);
+          r.endpointId.endsWith('/' + endpoint) && r.tableId === 'table:' + table && r.operations.includes(table === 'applicants' ? 'join' : 'read')), `${endpoint} accesses ${table}`);
       }
     }
     if (name === "property-management") {
       for (const table of ['leaseTenants', 'tenants']) assert.ok(model.relationships.some((r) =>
-        r.endpointId.endsWith('/reportAging') && r.tableId === 'table:' + table && r.operations.includes('read')), `reportAging reads ${table}`);
+        r.endpointId.endsWith('/reportAging') && r.tableId === 'table:' + table && r.operations.includes(table === 'tenants' ? 'join' : 'read')), `reportAging accesses ${table}`);
       for (const table of ['activity', 'notifications']) assert.ok(model.relationships.some((r) =>
         r.endpointId.endsWith('/clearDemoData') && r.tableId === 'table:' + table && r.operations.includes('read')), `bounded expansion retains ${table}`);
     }

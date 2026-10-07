@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Node, Project, ScriptTarget, ModuleKind, ModuleResolutionKind, SyntaxKind } from "ts-morph";
 import { systemModelSchema } from "../system-model/schema.ts";
-import type { Diagnostic, Relationship, SystemModel } from "../system-model/schema.ts";
+import type { Diagnostic, Relationship, SystemModel, TableOperation } from "../system-model/schema.ts";
 import { integrationFor } from "./integrations.ts";
 import { sqlTables } from "./sql.ts";
 import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
@@ -10,15 +10,17 @@ import { sqlDiagnostic, sqlTexts } from "./sql-text.ts";
 
 type TableDefinition = { id: string; name: string; sdkName: string; description?: string };
 type AppConfig = { name?: string; description?: string; accessMode?: string };
-type Operation = "read" | "write" | "unknown";
 type Finding =
-  | { kind: "table"; tableId: string; operation: Operation; evidence: string }
+  | { kind: "table"; tableId: string; operation: TableOperation; evidence: string }
   | { kind: "integration"; service: NonNullable<ReturnType<typeof integrationFor>>; evidence: string }
   | { kind: "diagnostic"; diagnostic: Diagnostic };
 type Scope = { findings: Finding[]; callees: Set<Node> };
 
-const readMethods = new Set(["findAll", "findOne"]);
-const writeMethods = new Set(["create", "update", "delete", "bulkCreate"]);
+const methodOperations = new Map<string, TableOperation>([
+  ["findAll", "read"], ["findOne", "read"],
+  ["create", "create"], ["bulkCreate", "create"],
+  ["update", "update"], ["delete", "delete"],
+]);
 
 async function json<T>(file: string): Promise<T> {
   return JSON.parse(await readFile(file, "utf8"));
@@ -130,7 +132,7 @@ export async function analyzeRepository(
       if (cached) return cached;
       const scope: Scope = { findings: [], callees: new Set() };
       scopes.set(scopeNode, scope);
-      const addTable = (name: string, operation: Operation, node: Node, sql = false) => {
+      const addTable = (name: string, operation: TableOperation, node: Node, sql = false) => {
         const tableId = (sql ? sqlTableIds : sdkTables).get(name);
         if (tableId) scope.findings.push({ kind: "table", tableId, operation, evidence: location(node) });
         else if (name === "ziteUsers" || name === "pg_timezone_names") scope.findings.push(warning(
@@ -156,7 +158,7 @@ export async function analyzeRepository(
                 const unresolved = new Set<Node>();
                 const queries = sqlTexts(property(node.getArguments()[0], "query"), new Set(), new Map(), unresolved);
                 const results = queries.map(sqlTables);
-                for (const name of new Set(results.flatMap((result) => result.names))) addTable(name, "read", node, true);
+                for (const { name, operation } of results.flatMap((result) => result.accesses)) addTable(name, operation, node, true);
                 if (results.some((result) => result.partial || result.failed)) {
                   const diagnostic = results.some((result) => result.partial) ? sqlDiagnostic(queries, unresolved) : {
                     code: "unsupported-sql", message: "SQL syntax is not supported by the parser; quoted FROM/JOIN references are retained.",
@@ -166,7 +168,7 @@ export async function analyzeRepository(
               } else if (table !== "auth" && method) {
                 if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
                 else {
-                  const operation = readMethods.has(method) ? "read" : writeMethods.has(method) ? "write" : "unknown";
+                  const operation = methodOperations.get(method) ?? "unknown";
                   addTable(table, operation, node);
                   if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
                 }
