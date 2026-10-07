@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 
-export type Project = { id: string; revisions: string[] };
+export type Workspace = { id: string; revisions: string[] };
 
 async function directories(directory: string): Promise<string[]> {
   try {
@@ -16,17 +16,17 @@ async function directories(directory: string): Promise<string[]> {
   }
 }
 
-/** Discover local checkouts in userdata/<project>/<revision>. */
-export async function discoverProjects(
+/** Discover local checkouts in userdata/<workspace>/<revision>. */
+export async function discoverWorkspaces(
   root = path.join(process.cwd(), "userdata"),
-): Promise<Project[]> {
+): Promise<Workspace[]> {
   const names = await directories(root);
-  const projects = await Promise.all(
+  const workspaces = await Promise.all(
     names.map(async (id) => ({
       id,
       // Checkouts are server data, supplied at runtime rather than bundled.
       revisions: await directories(path.join(/* turbopackIgnore: true */ root, id)),
     })),
   );
-  return projects.filter((project) => project.revisions.length > 0);
+  return workspaces.filter((workspace) => workspace.revisions.length > 0);
 }
