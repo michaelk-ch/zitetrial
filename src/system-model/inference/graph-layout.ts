@@ -1,5 +1,6 @@
-import type { App, Endpoint, Integration, SystemModel, Table } from "../schema.ts";
-import { buildAccessMatrix, type MatrixGroup, type MatrixRow, type Operation, type Usage } from "./access-matrix.ts";
+import type { App, Endpoint, Integration, Table } from "../schema.ts";
+import type { MatrixGroup, MatrixRow, Operation, Usage } from "./access-matrix.ts";
+import type { Preprocessed } from "./preprocess.ts";
 
 /**
  * Deterministic three-column layout for the graph view: tables | apps (with endpoints) | integrations.
@@ -13,7 +14,7 @@ export type GraphFocus = { kind: "app" | "table" | "integration"; id: string } |
 export type EdgeKind = "read" | "write" | "both" | "unknown" | "call";
 
 type Rect = { x: number; y: number; w: number; h: number };
-/** Totals across the whole model, independent of the focus. */
+/** Totals across all preprocessed endpoints, independent of the focus. */
 export type SideUsage = { apps: number; endpoints: number; readers: number; writers: number };
 export type GraphTable = Rect & { key: string; entity: Table; usage: SideUsage };
 export type GraphIntegration = Rect & { key: string; entity: Integration; usage: SideUsage };
@@ -110,11 +111,8 @@ function sideUsage(groups: MatrixGroup[], matches: (row: MatrixRow) => Operation
   return usage;
 }
 
-export function layoutGraph(model: SystemModel, focus: GraphFocus = null, { top = 0 } = {}): GraphLayout {
+export function layoutGraph({ groups, tables: allTables, integrations: allIntegrations }: Preprocessed, focus: GraphFocus = null, { top = 0 } = {}): GraphLayout {
   const { pad, minWidth, columnGap, table: T, integration: I, app: A } = graphSizes;
-  const groups = buildAccessMatrix(model);
-  const allTables = [...model.tables].sort(byName);
-  const allIntegrations = [...model.integrations].sort(byName);
 
   let spine: Spine[];
   let tables: Table[];

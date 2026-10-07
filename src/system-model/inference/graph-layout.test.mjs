@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { systemModelSchema } from "../schema.ts";
 import { edgeKind, graphSizes, layoutGraph, packColumn } from "./graph-layout.ts";
+import { preprocess } from "./preprocess.ts";
 
 const model = systemModelSchema.parse({
   schemaVersion: 1, repository: { name: "Graph example" },
@@ -30,6 +31,7 @@ const model = systemModelSchema.parse({
     { kind: "table-reference", sourceTableId: "payments", targetTableId: "users" },
   ],
 });
+const data = preprocess(model, { showJoins: true, prioritize: false, hideUnused: false });
 const edgeSummary = (layout) => layout.edges.map((edge) => `${edge.sourceKey}->${edge.targetKey}:${edge.kind}:${edge.weight}`).sort();
 const boxes = (layout) => [...layout.apps, ...layout.tables, ...layout.integrations];
 
@@ -47,7 +49,7 @@ test("packColumn keeps order and gaps and stays close to the desired tops", () =
 });
 
 test("the default view shows every entity and one aggregated edge per app and target", () => {
-  const layout = layoutGraph(model);
+  const layout = layoutGraph(data);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.expanded, app.rows.length]), [["admin", false, 0], ["portal", false, 0]]);
   assert.deepEqual(layout.columns.map((column) => column.kind), ["tables", "apps", "integrations"]);
   assert.deepEqual(edgeSummary(layout), [
@@ -65,7 +67,7 @@ test("the default view shows every entity and one aggregated edge per app and ta
 });
 
 test("focusing an app expands its endpoints and keeps only the tables and integrations it uses", () => {
-  const layout = layoutGraph(model, { kind: "app", id: "admin" });
+  const layout = layoutGraph(data, { kind: "app", id: "admin" });
   assert.equal(layout.apps.length, 1);
   const [admin] = layout.apps;
   assert.equal(admin.expanded, true);
@@ -82,7 +84,7 @@ test("focusing an app expands its endpoints and keeps only the tables and integr
 });
 
 test("focusing a table shows only the apps and endpoints that access it, with their operations", () => {
-  const layout = layoutGraph(model, { kind: "table", id: "payments" });
+  const layout = layoutGraph(data, { kind: "table", id: "payments" });
   assert.deepEqual(layout.columns.map((column) => column.kind), ["tables", "apps"]);
   assert.deepEqual(layout.tables.map((table) => table.entity.id), ["payments"]);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.rows.map((row) => [row.endpoint.id, row.operations])]), [
@@ -94,20 +96,20 @@ test("focusing a table shows only the apps and endpoints that access it, with th
 });
 
 test("focusing an integration shows only the endpoints that call it", () => {
-  const layout = layoutGraph(model, { kind: "integration", id: "email" });
+  const layout = layoutGraph(data, { kind: "integration", id: "email" });
   assert.deepEqual(layout.columns.map((column) => column.kind), ["apps", "integrations"]);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.rows.map((row) => row.endpoint.id)]), [["admin", ["refund"]], ["portal", ["signup"]]]);
   assert.deepEqual(edgeSummary(layout), ["endpoint:refund->integration:email:call:1", "endpoint:signup->integration:email:call:1"]);
 });
 
 test("an unknown focus falls back to the default view", () => {
-  assert.deepEqual(layoutGraph(model, { kind: "table", id: "missing" }), layoutGraph(model));
+  assert.deepEqual(layoutGraph(data, { kind: "table", id: "missing" }), layoutGraph(data));
 });
 
 for (const focus of [null, { kind: "app", id: "admin" }, { kind: "table", id: "users" }, { kind: "integration", id: "email" }]) {
   test(`boxes never overlap and edges attach to box sides (${focus?.kind ?? "default"})`, () => {
     const top = 100;
-    const layout = layoutGraph(model, focus, { top });
+    const layout = layoutGraph(data, focus, { top });
     assert.equal(Math.min(...boxes(layout).map((box) => box.y)), top);
     for (const column of [layout.apps, layout.tables, layout.integrations]) {
       const sorted = [...column].sort((a, b) => a.y - b.y);

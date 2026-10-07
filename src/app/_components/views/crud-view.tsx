@@ -2,11 +2,10 @@
 
 import { useMemo, useState } from "react";
 import type { Integration, SystemModel, Table } from "@/system-model/schema";
-import {
-  accessLabel, buildAccessMatrix, filterMatrix, usedColumns,
-  type ColumnFilter, type Operation, type Usage,
-} from "@/system-model/inference/access-matrix";
+import { accessLabel, type ColumnFilter, type Operation, type Usage } from "@/system-model/inference/access-matrix";
+import { defaultAccessOptions, preprocess } from "@/system-model/inference/preprocess";
 import Panel from "../panel";
+import AccessOptionsControls from "./access-options";
 
 type Column = { kind: "table"; entity: Table } | { kind: "integration"; entity: Integration };
 type Condition = Operation | "any";
@@ -58,9 +57,7 @@ function Cells({ usage, columns, rowName, strong }: { usage: Usage; columns: Col
 }
 
 export default function CrudView({ model }: { model: SystemModel }) {
-  const [showJoins, setShowJoins] = useState(false);
-  const [prioritize, setPrioritize] = useState(false);
-  const groups = useMemo(() => buildAccessMatrix(model, { showJoins, prioritize }), [model, showJoins, prioritize]);
+  const [options, setOptions] = useState(defaultAccessOptions);
   const columns = useMemo<Column[]>(() => [
     ...[...model.tables].sort(byName).map((entity) => ({ kind: "table" as const, entity })),
     ...[...model.integrations].sort(byName).map((entity) => ({ kind: "integration" as const, entity })),
@@ -69,21 +66,25 @@ export default function CrudView({ model }: { model: SystemModel }) {
   const [query, setQuery] = useState("");
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const [hideUnused, setHideUnused] = useState(true);
 
-  const visibleGroups = useMemo(() => filterMatrix(groups, { query, filters }), [groups, query, filters]);
-  const used = useMemo(() => usedColumns(visibleGroups), [visibleGroups]);
-  const visibleColumns = hideUnused
-    ? columns.filter((column) => filters.some((filter) => isColumn(filter, column)) || (column.kind === "table" ? used.tables : used.integrations).has(column.entity.id))
-    : columns;
+  const { groups: visibleGroups, tables, integrations } = useMemo(() => preprocess(model, options, { query, filters }), [model, options, query, filters]);
+  const visibleColumns = useMemo<Column[]>(() => [
+    ...tables.map((entity) => ({ kind: "table" as const, entity })),
+    ...integrations.map((entity) => ({ kind: "integration" as const, entity })),
+  ], [tables, integrations]);
+  const totals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const endpoint of model.endpoints) totals.set(endpoint.appId, (totals.get(endpoint.appId) ?? 0) + 1);
+    return totals;
+  }, [model]);
   const tableCount = visibleColumns.filter((column) => column.kind === "table").length;
   const integrationCount = visibleColumns.length - tableCount;
   const totalEndpoints = model.endpoints.length;
   const shownEndpoints = visibleGroups.reduce((sum, group) => sum + group.endpoints.length, 0);
   const filtering = query.trim() !== "" || filters.length > 0;
 
-  if (groups.length === 0 || model.tables.length === 0) {
-    return <Panel className="p-8 text-sm text-muted">No {groups.length === 0 ? "apps" : "tables"} found in this workspace.</Panel>;
+  if (model.apps.length === 0 || model.tables.length === 0) {
+    return <Panel className="p-8 text-sm text-muted">No {model.apps.length === 0 ? "apps" : "tables"} found in this workspace.</Panel>;
   }
 
   const toggleColumnFilter = (column: Column) => setFilters((current) => current.some((filter) => isColumn(filter, column))
@@ -108,7 +109,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
             ["R", "read", tones.read], ["J", "join", tones.join], ["C", "create", tones.create],
             ["U", "update", tones.update], ["D", "delete", tones.delete],
             ["?", "unclassified", tones.unknown], ["●", "called", tones.call],
-          ] as const).filter(([label]) => showJoins || label !== "J").map(([label, text, tone]) => (
+          ] as const).filter(([label]) => options.showJoins || label !== "J").map(([label, text, tone]) => (
             <span key={label} className="inline-flex items-center gap-1.5">
               <span className={`inline-grid size-5 place-items-center rounded font-mono text-[11px] font-semibold ${tone}`}>{label}</span>{text}
             </span>
@@ -138,18 +139,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
             </optgroup>
           ))}
         </select>
-        <label className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
-          <input type="checkbox" checked={hideUnused} onChange={(event) => setHideUnused(event.target.checked)} className="accent-[#385e4b]" />
-          Hide unused columns{hideUnused && columns.length > visibleColumns.length && <span className="text-faint">({columns.length - visibleColumns.length} hidden)</span>}
-        </label>
-        <label className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
-          <input type="checkbox" checked={showJoins} onChange={(event) => setShowJoins(event.target.checked)} className="accent-[#385e4b]" />
-          Show joins
-        </label>
-        <label title="For each endpoint, keep create/delete accesses first, then updates, then reads, then joins." className="ml-1 inline-flex cursor-pointer items-center gap-1.5 text-xs text-muted select-none">
-          <input type="checkbox" checked={prioritize} onChange={(event) => setPrioritize(event.target.checked)} className="accent-[#385e4b]" />
-          Prioritize
-        </label>
+        <AccessOptionsControls value={options} onChange={setOptions} hidden={columns.length - visibleColumns.length} />
         <span aria-live="polite" className="ml-auto text-xs text-muted">{filtering ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
       </div>
 
@@ -165,7 +155,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
                   aria-label={`Condition for ${nameOf(filter)}`}
                   className="cursor-pointer rounded bg-transparent text-muted hover:text-ink"
                 >
-                  {conditions.map(([value, label]) => <option key={value} value={value} disabled={value === "join" && !showJoins}>{label}</option>)}
+                  {conditions.map(([value, label]) => <option key={value} value={value} disabled={value === "join" && !options.showJoins}>{label}</option>)}
                 </select>
               ) : <span className="text-muted">call</span>}
               <span className="font-medium">{nameOf(filter)}</span>
@@ -221,7 +211,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
           {visibleGroups.map((group) => {
             const { app, endpoints } = group;
             const expanded = !collapsed.has(app.id);
-            const total = groups.find((other) => other.app.id === app.id)?.endpoints.length ?? 0;
+            const total = totals.get(app.id) ?? 0;
             return (
               <tbody key={app.id}>
                 <tr className="bg-[#f2f3f2]">

@@ -3,11 +3,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { SystemModel } from "@/system-model/schema";
 import { accessLabel, type Operation } from "@/system-model/inference/access-matrix";
+import { defaultAccessOptions, preprocess } from "@/system-model/inference/preprocess";
 import {
   edgeKind, graphSizes, layoutGraph,
   type EdgeKind, type GraphApp, type GraphEdge, type GraphFocus, type GraphIntegration, type GraphLayout, type GraphTable,
 } from "@/system-model/inference/graph-layout";
 import Panel from "../panel";
+import AccessOptionsControls from "./access-options";
 
 // The graph is plain SVG with inline presentation attributes, so the exported image matches the screen.
 const SANS = "Arial, Helvetica, sans-serif";
@@ -383,10 +385,13 @@ export default function GraphView({ model }: { model: SystemModel }) {
   // A clicked endpoint row stays highlighted (and is exported that way) until clicked again.
   const [pinned, setPinned] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [accessOptions, setAccessOptions] = useState(defaultAccessOptions);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const layout = useMemo(() => layoutGraph(model, focus, { top: HEADER }), [model, focus]);
+  // Unused tables and integrations are hidden from the overview but can still be focused.
+  const data = useMemo(() => preprocess(model, { ...accessOptions, hideUnused: accessOptions.hideUnused && !focus }), [model, accessOptions, focus]);
+  const layout = useMemo(() => layoutGraph(data, focus, { top: HEADER }), [data, focus]);
   const { tokens, names, related } = useMemo(() => {
     const tokens: Tokens = new Map();
     const names = new Map<string, string>();
@@ -477,6 +482,11 @@ export default function GraphView({ model }: { model: SystemModel }) {
         <span className="text-faint max-[900px]:hidden">
           {focus ? "Hover to trace connections; click an endpoint to pin them. Esc goes back." : "Click an app, table or integration to focus it. Hover to trace connections."}
         </span>
+        <AccessOptionsControls
+          value={accessOptions}
+          onChange={setAccessOptions}
+          hidden={model.tables.length + model.integrations.length - data.tables.length - data.integrations.length}
+        />
         <select
           value={focusKey(focus)}
           onChange={(event) => {
