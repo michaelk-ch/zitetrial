@@ -3,7 +3,7 @@ import Panel from "./panel";
 
 const node = "absolute h-7 w-8 rounded-[7px] border";
 
-export default function EmptyState({ title, badge, children }: { title: string; badge?: string; children: ReactNode }) {
+export default function EmptyState({ title, footer, children }: { title: string; footer?: ReactNode; children: ReactNode }) {
   return (
     <Panel className="grid min-h-[420px] place-items-center px-6 py-10 max-[540px]:min-h-[340px]">
       <div className="max-w-[360px] text-center">
@@ -15,7 +15,7 @@ export default function EmptyState({ title, badge, children }: { title: string; 
         </div>
         <h2 className="mt-5 mb-2.5 text-xl leading-[normal] font-medium tracking-[-0.03em]">{title}</h2>
         <p className="text-[13px] leading-[1.8] text-muted [overflow-wrap:anywhere]">{children}</p>
-        {badge && <span className="mt-[22px] inline-block rounded-md border border-line bg-[#f5f5f5] px-[9px] py-[5px] text-[11px] text-muted">{badge}</span>}
+        {footer && <div className="mt-[22px]">{footer}</div>}
       </div>
     </Panel>
   );

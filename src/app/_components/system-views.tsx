@@ -19,7 +19,10 @@ export default function SystemViews({ model }: { model: SystemModel }) {
           id: "overview",
           label: "Overview",
           content: (
-            <EmptyState title="Your system, at a glance" badge="Visualization coming soon">
+            <EmptyState
+              title="Your system, at a glance"
+              footer={<span className="inline-block rounded-md border border-line bg-[#f5f5f5] px-[9px] py-[5px] text-[11px] text-muted">Visualization coming soon</span>}
+            >
               Apps, tables, and integrations will come together here. Choose a workspace in the sidebar to explore a different system.
             </EmptyState>
           ),

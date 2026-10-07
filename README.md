@@ -27,7 +27,8 @@ npm start
 ## Structure
 
 - `src/app/`: routes only (layout, pages, `loading.tsx`, `not-found.tsx`) plus theme tokens in `globals.css`.
-- `src/app/_components/`: viewer UI. Async server components that load data sit next to their skeletons.
+- `src/app/api/workspaces/[workspace]/model`: the only place the app runs the analyzer, in a worker thread so it never blocks the server; returns the system model JSON.
+- `src/app/_components/`: viewer UI. Data-loading components sit next to their skeletons; `workspace-views.tsx` fetches the model from the API in the browser.
 - `src/viewer/`: framework-independent view logic (e.g. the CRUD access matrix), unit-tested with `npm test`.
 - `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer.
 - `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.

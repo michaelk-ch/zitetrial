@@ -35,3 +35,7 @@ export async function discoverWorkspaces(root = defaultRoot): Promise<Workspace[
   );
   return workspaces.filter((workspace) => workspace.revisions.length > 0);
 }
+
+export async function findWorkspace(id: string, root = defaultRoot): Promise<Workspace | undefined> {
+  return (await discoverWorkspaces(root)).find((workspace) => workspace.id === id);
+}
