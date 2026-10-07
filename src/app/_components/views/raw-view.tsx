@@ -1,5 +1,5 @@
 import type { SystemModel } from "@/system-model/schema";
-import Panel from "./panel";
+import Panel from "../panel";
 
 export default function RawView({ model }: { model: SystemModel }) {
   return (

@@ -1,4 +1,4 @@
-import type { App, Endpoint, Relationship, SystemModel } from "../system-model/schema.ts";
+import type { App, Endpoint, Relationship, SystemModel } from "../schema.ts";
 
 type Operation = Extract<Relationship, { kind: "table-access" }>["operations"][number];
 type Access = Map<string, Set<Operation>>;

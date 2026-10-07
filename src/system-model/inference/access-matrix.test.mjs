@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { systemModelSchema } from "../system-model/schema.ts";
+import { systemModelSchema } from "../schema.ts";
 import { accessLabel, buildAccessMatrix } from "./access-matrix.ts";
 
 test("app access unions endpoint operations without leaking across endpoints or apps", () => {

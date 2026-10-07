@@ -1,8 +1,8 @@
 import type { SystemModel } from "@/system-model/schema";
 import CrudView from "./crud-view";
-import EmptyState from "./empty-state";
+import EmptyState from "../empty-state";
 import RawView from "./raw-view";
-import Tabs from "./tabs";
+import Tabs from "../tabs";
 
 export default function SystemViews({ model }: { model: SystemModel }) {
   const { commit } = model.repository;

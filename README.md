@@ -28,9 +28,8 @@ npm start
 
 - `src/app/`: routes only (layout, pages, `loading.tsx`, `not-found.tsx`) plus theme tokens in `globals.css`.
 - `src/app/api/workspaces/[workspace]/model`: the only place the app runs the analyzer, in a worker thread so it never blocks the server; returns the system model JSON.
-- `src/app/_components/`: viewer UI. Data-loading components sit next to their skeletons; `workspace-views.tsx` fetches the model from the API in the browser.
-- `src/viewer/`: framework-independent view logic (e.g. the CRUD access matrix), unit-tested with `npm test`.
-- `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer.
+- `src/app/_components/`: shared viewer UI; `views/` holds the system views (overview, raw, CRUD) and their skeleton. The workspace page fetches the model from the API in the browser with TanStack Query.
+- `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer, plus derived views in `inference/`.
 - `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.
 - `public/`: static assets.
 - `next.config.ts`: Next.js configuration.

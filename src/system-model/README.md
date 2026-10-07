@@ -28,6 +28,11 @@ These strings are opaque: the schema does not parse paths or line numbers.
 Apps and tables do not carry evidence. Shared-code findings can point into
 `packages/shared` while their relationship's `endpointId` identifies the caller.
 
+## Inference
+
+`inference/` holds pure functions that derive views from a model, such as
+`access-matrix.ts` (per-app and per-endpoint table access for the CRUD view).
+
 ## Validation and serialization
 
 Use `systemModelSchema.parse(value)` or `.safeParse(value)` for input data.

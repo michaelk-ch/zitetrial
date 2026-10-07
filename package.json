@@ -8,10 +8,11 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/system-model/*.test.mjs src/analyzer/*.test.mjs src/viewer/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/system-model/*.test.mjs src/system-model/inference/*.test.mjs src/analyzer/*.test.mjs",
     "analyze": "node --experimental-strip-types src/analyzer/cli.ts"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.104.1",
     "next": "16.4.0",
     "node-sql-parser": "^5.4.0",
     "react": "19.3.0",

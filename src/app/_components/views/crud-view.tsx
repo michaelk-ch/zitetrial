@@ -1,6 +1,6 @@
 import type { SystemModel } from "@/system-model/schema";
-import { accessLabel, buildAccessMatrix } from "@/viewer/access-matrix";
-import Panel from "./panel";
+import { accessLabel, buildAccessMatrix } from "@/system-model/inference/access-matrix";
+import Panel from "../panel";
 
 const cell = "border-r border-b text-center font-mono";
 

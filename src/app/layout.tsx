@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
+import Providers from "./_components/providers";
 import { WorkspaceNav, WorkspaceNavSkeleton } from "./_components/workspace-nav";
 import "./globals.css";
 
@@ -22,7 +23,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <div className="flex-1 rounded-tl-[18px] border-t border-l border-line-strong bg-white px-10 py-11 max-[760px]:px-6 max-[760px]:py-7 max-[540px]:rounded-none max-[540px]:border-0 max-[540px]:px-5">
               <div className="mx-auto max-w-[780px]">
                 <h1 className="mb-4 text-base leading-[normal] font-semibold tracking-[-0.02em]">System overview</h1>
-                {children}
+                <Providers>{children}</Providers>
               </div>
             </div>
           </main>

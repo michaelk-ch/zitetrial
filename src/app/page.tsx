@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { discoverWorkspaces } from "@/workspaces/discover";
 import EmptyState from "./_components/empty-state";
-import { SystemViewsSkeleton } from "./_components/system-views";
+import { SystemViewsSkeleton } from "./_components/views/system-views";
 
 async function FirstWorkspace() {
   const [first] = await discoverWorkspaces();
