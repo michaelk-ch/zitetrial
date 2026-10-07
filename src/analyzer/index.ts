@@ -74,6 +74,9 @@ export async function analyzeRepository(
   ]));
   const relationships = new Map<string, Relationship>();
   const diagnostics = new Map<string, Diagnostic>();
+  // Literal contexts and apps often share SQL. Parse each exact query once per
+  // analysis; findings still receive their own call-site evidence.
+  const parsedQueries = new Map<string, ReturnType<typeof sqlTables>>();
   // Zite exposes linked records through SQL link tables, named by the sorted
   // PascalCase SDK table names. Inverse fields and multiple links share a table.
   const tablesById = new Map(schema.tables.map((table) => [table.id, table]));
@@ -106,7 +109,15 @@ export async function analyzeRepository(
     }
   }
   const relativePath = (node: Node) => path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/");
-  const location = (node: Node) => `${relativePath(node)}:${node.getStartLineNumber()}`;
+  const locations = new WeakMap<Node, string>();
+  const location = (node: Node) => {
+    let value = locations.get(node);
+    if (value === undefined) {
+      value = `${relativePath(node)}:${node.getStartLineNumber()}`;
+      locations.set(node, value);
+    }
+    return value;
+  };
   const warning = (code: string, message: string, node: Node, severity: Diagnostic["severity"] = "warning"): Finding => ({
     kind: "diagnostic", diagnostic: { severity, code, message, evidence: [location(node)] },
   });
@@ -249,7 +260,14 @@ export async function analyzeRepository(
               const options = constant(node.getArguments()[0], bindings);
               const query = options && typeof options === "object" ? options.query : undefined;
               const queries = typeof query === "string" ? [query] : sqlTexts(property(node.getArguments()[0], "query"), new Set(), bindings, unresolved);
-              const results = queries.map(sqlTables);
+              const results = queries.map((query) => {
+                let result = parsedQueries.get(query);
+                if (!result) {
+                  result = sqlTables(query);
+                  parsedQueries.set(query, result);
+                }
+                return result;
+              });
               for (const { name, operation } of results.flatMap((result) => result.accesses)) addTable(name, operation, node, true);
               if (results.some((result) => result.partial || result.failed)) {
                 const diagnostic = results.some((result) => result.partial) ? sqlDiagnostic(queries, unresolved) : {

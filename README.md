@@ -31,6 +31,7 @@ npm start
 - `src/app/_components/`: shared viewer UI; `views/` holds the system views (overview, graph, raw, CRUD) and their skeleton. The workspace page fetches the model from the API in the browser with TanStack Query.
 - `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer, plus derived views in `inference/`.
 - `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.
+- `src/interpreter/`: cached OpenAI interpretation of analyzed facts, with a reusable function and CLI.
 - `public/`: static assets.
 - `next.config.ts`: Next.js configuration.
 - `@/*`: import alias for `src/*`.
@@ -53,3 +54,9 @@ It is written to `userdata/<workspace>/<commit>`, where the workspace is the keb
 
 Run `npm run analyze -- userdata/<workspace>/<sha> model.json` to analyze a checkout.
 See [`src/analyzer/README.md`](src/analyzer/README.md) for the API and supported patterns.
+
+For AI interpretation, set `OPENAI_API_KEY` in `.env.local` and use the workspace's
+**Interpretation** tab, or run `npm run interpret -- model.json interpretation.json`.
+Results and completed batches are cached in `userdata/.interpretations/`.
+See [`src/interpreter/README.md`](src/interpreter/README.md) for the schema, prompts,
+model selection, dry runs, and cache behavior.

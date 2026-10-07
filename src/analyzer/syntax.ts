@@ -40,9 +40,16 @@ export function unwrap(node: Node): Node {
   return node;
 }
 
+// Analysis never edits its AST. Declarations do not depend on literal bindings,
+// so contexts can share them; weak keys let completed projects be collected.
+const declarationCache = new WeakMap<Node, Node[]>();
 export function declarations(node: Node): Node[] {
+  const cached = declarationCache.get(node);
+  if (cached) return cached;
   const symbol = node.getSymbol();
-  return (symbol?.getAliasedSymbol() ?? symbol)?.getDeclarations() ?? [];
+  const result = (symbol?.getAliasedSymbol() ?? symbol)?.getDeclarations() ?? [];
+  declarationCache.set(node, result);
+  return result;
 }
 
 const assignments = new WeakMap<Node, Set<Node>>();
