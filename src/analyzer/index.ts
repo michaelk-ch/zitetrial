@@ -1,0 +1,227 @@
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import { Node, Project, ScriptTarget, ModuleKind, ModuleResolutionKind, SyntaxKind } from "ts-morph";
+import { systemModelSchema } from "../system-model/schema.ts";
+import type { Diagnostic, Relationship, SourceLocation, SystemModel } from "../system-model/schema.ts";
+import { integrationFor } from "./integrations.ts";
+import { sqlTables } from "./sql.ts";
+import { bodyOf, callable, literal, origin, property, sqlText } from "./syntax.ts";
+
+type TableDefinition = { id: string; name: string; sdkName: string; description?: string };
+type AppConfig = { name?: string; description?: string; accessMode?: string };
+type Operation = "read" | "write" | "unknown";
+type Finding =
+  | { kind: "table"; tableId: string; operation: Operation; evidence: SourceLocation }
+  | { kind: "integration"; service: NonNullable<ReturnType<typeof integrationFor>>; evidence: SourceLocation }
+  | { kind: "diagnostic"; diagnostic: Diagnostic };
+type Scope = { findings: Finding[]; callees: Set<Node> };
+
+const readMethods = new Set(["findAll", "findOne"]);
+const writeMethods = new Set(["create", "update", "delete", "bulkCreate"]);
+
+async function json<T>(file: string): Promise<T> {
+  return JSON.parse(await readFile(file, "utf8"));
+}
+
+function addEvidence(evidence: SourceLocation[], location: SourceLocation) {
+  if (!evidence.some((item) => item.path === location.path && item.line === location.line)) evidence.push(location);
+}
+
+/** Static analysis only: never imports or executes the analyzed repository. */
+export async function analyzeRepository(
+  directory: string,
+  metadata: Partial<SystemModel["repository"]> = {},
+): Promise<SystemModel> {
+  const root = path.resolve(directory);
+  const [schema, config, entries] = await Promise.all([
+    json<{ tables: TableDefinition[] }>(path.join(root, "zite.schema.json")),
+    json<{ project: { name: string } }>(path.join(root, "zite.config.json")),
+    readdir(path.join(root, "apps"), { withFileTypes: true }),
+  ]);
+  const revision = path.basename(root);
+  const model: SystemModel = {
+    schemaVersion: 1,
+    repository: {
+      name: config.project.name,
+      ...(/^[a-f\d]{40}$/i.test(revision) ? { commit: revision } : {}),
+      ...metadata,
+    },
+    apps: [],
+    tables: schema.tables.map((table) => ({
+      id: `table:${table.sdkName}`, name: table.name,
+      ...(table.description && { description: table.description }),
+      evidence: [{ path: "zite.schema.json" }],
+    })),
+    integrations: [], endpoints: [], relationships: [], diagnostics: [],
+  };
+  const sdkTables = new Map(schema.tables.map((table, i) => [table.sdkName, model.tables[i].id]));
+  const sqlTableIds = new Map(schema.tables.map((table, i) => [
+    table.sdkName[0].toUpperCase() + table.sdkName.slice(1), model.tables[i].id,
+  ]));
+  const relationships = new Map<string, Relationship>();
+  const diagnostics = new Map<string, Diagnostic>();
+  const location = (node: Node): SourceLocation => ({
+    path: path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/"),
+    line: node.getStartLineNumber(),
+  });
+  const warning = (code: string, message: string, node: Node): Finding => ({
+    kind: "diagnostic", diagnostic: { severity: "warning", code, message, evidence: [location(node)] },
+  });
+
+  function record(endpointId: string, finding: Finding) {
+    if (finding.kind === "diagnostic") {
+      const diagnostic = finding.diagnostic;
+      diagnostics.set(JSON.stringify(diagnostic), diagnostic);
+      return;
+    }
+    const targetId = finding.kind === "table" ? finding.tableId : `integration:${finding.service.provider}`;
+    const id = `${endpointId}->${targetId}`;
+    if (finding.kind === "integration") {
+      let integration = model.integrations.find((item) => item.id === targetId);
+      if (!integration) {
+        integration = { id: targetId, ...finding.service, evidence: [] };
+        model.integrations.push(integration);
+      }
+      addEvidence(integration.evidence, finding.evidence);
+    }
+    let relationship = relationships.get(id);
+    if (!relationship) {
+      relationship = finding.kind === "table"
+        ? { id, kind: "table-access", endpointId, tableId: targetId, operations: [finding.operation], evidence: [] }
+        : { id, kind: "integration-use", endpointId, integrationId: targetId, evidence: [] };
+      relationships.set(id, relationship);
+    }
+    if (relationship.kind === "table-access" && finding.kind === "table") {
+      const operations = new Set([...relationship.operations, finding.operation]);
+      if (operations.size > 1) operations.delete("unknown");
+      relationship.operations = [...operations].sort();
+    }
+    addEvidence(relationship.evidence, finding.evidence);
+  }
+
+  for (const entry of entries.filter((entry) => entry.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
+    const appPath = path.join(root, "apps", entry.name);
+    const appConfig = await json<AppConfig>(path.join(appPath, "zite.config.json"));
+    const appId = `app:${entry.name}`;
+    model.apps.push({
+      id: appId, name: appConfig.name ?? entry.name,
+      ...(appConfig.description && { description: appConfig.description }),
+      visibility: appConfig.accessMode === "internal" ? "internal" :
+        ["external", "public"].includes(appConfig.accessMode ?? "") ? "public" : "unknown",
+      evidence: [{ path: `apps/${entry.name}/zite.config.json` }],
+    });
+
+    // Each app has its own @/ alias. No installed dependencies or generated clients are needed.
+    const project = new Project({
+      skipAddingFilesFromTsConfig: true,
+      skipFileDependencyResolution: true,
+      compilerOptions: {
+        target: ScriptTarget.ESNext, module: ModuleKind.ESNext,
+        moduleResolution: ModuleResolutionKind.Bundler, noLib: true,
+        baseUrl: root,
+        paths: { "@project/*": ["packages/*"], "@/*": [`apps/${entry.name}/src/*`] },
+      },
+    });
+    project.addSourceFilesAtPaths([
+      `${appPath}/src/**/*.ts`, `${appPath}/src/**/*.tsx`, `${root}/packages/**/*.ts`, `${root}/packages/**/*.tsx`,
+      `!${root}/**/node_modules/**`, `!${root}/**/.zite/**`, `!${root}/**/*.d.ts`,
+    ]);
+    const scopes = new Map<Node, Scope>();
+
+    function scan(scopeNode: Node): Scope {
+      const cached = scopes.get(scopeNode);
+      if (cached) return cached;
+      const scope: Scope = { findings: [], callees: new Set() };
+      scopes.set(scopeNode, scope);
+      const addTable = (name: string, operation: Operation, node: Node, sql = false) => {
+        const tableId = (sql ? sqlTableIds : sdkTables).get(name);
+        if (tableId) scope.findings.push({ kind: "table", tableId, operation, evidence: location(node) });
+        else scope.findings.push(warning("unresolved-table", `Table ${JSON.stringify(name)} is not in zite.schema.json.`, node));
+      };
+      const body = bodyOf(scopeNode);
+      if (!body) return scope;
+      function visit(node: Node) {
+        if (Node.isFunctionLikeDeclaration(node)) {
+          // Inline callbacks may run; local function declarations require a call.
+          if (!Node.isFunctionDeclaration(node) && !Node.isVariableDeclaration(node.getParent())) scope.callees.add(node);
+          return;
+        }
+        if (Node.isCallExpression(node)) {
+          const expression = node.getExpression();
+          const source = origin(expression);
+          if (source?.module === "zitejs/db" && source.members[0] === "zite") {
+            const [, table, method] = source.members;
+            if (table === "sql") {
+              const result = sqlTables(sqlText(property(node.getArguments()[0], "query")));
+              for (const name of result.names) addTable(name, "read", node, true);
+              if (result.partial || result.failed) scope.findings.push(warning(
+                result.partial ? "dynamic-sql" : "unsupported-sql",
+                "SQL could only be partially analyzed; resolved table references are retained.", node,
+              ));
+            } else if (table !== "auth" && method) {
+              if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
+              else {
+                const operation = readMethods.has(method) ? "read" : writeMethods.has(method) ? "write" : "unknown";
+                addTable(table, operation, node);
+                if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
+              }
+            }
+          } else if (source) {
+            const service = integrationFor(source);
+            if (service) scope.findings.push({ kind: "integration", service, evidence: location(node) });
+          }
+          const target = callable(expression);
+          if (target) scope.callees.add(target);
+          for (const argument of node.getArguments()) {
+            const callback = callable(argument);
+            if (callback) scope.callees.add(callback);
+          }
+        }
+        node.forEachChild(visit);
+      }
+      visit(body);
+      return scope;
+    }
+
+    const apiRoot = `${appPath}/src/api/`;
+    const files = project.getSourceFiles().filter((file) => file.getFilePath().startsWith(apiRoot))
+      .sort((a, b) => a.getFilePath().localeCompare(b.getFilePath()));
+    for (const file of files) {
+      const endpointId = `endpoint:${location(file).path.replace(/\.tsx?$/, "")}`;
+      const definition = file.getDescendantsOfKind(SyntaxKind.CallExpression).find((call) => {
+        const source = origin(call.getExpression());
+        return source?.module === "zitejs/backend" && source.members.at(-1) === "createEndpoint";
+      });
+      const options = definition?.getArguments()[0];
+      const description = literal(property(options, "description"));
+      model.endpoints.push({
+        id: endpointId, appId, name: file.getFilePath().slice(apiRoot.length).replace(/\.tsx?$/, ""),
+        ...(description && { description }), evidence: [location(definition ?? file)],
+      });
+      const execute = property(options, "execute");
+      const start = execute && callable(execute);
+      if (!start) {
+        record(endpointId, warning("unsupported-endpoint", "Could not resolve createEndpoint's execute function.", definition ?? file));
+        continue;
+      }
+      const visited = new Set<Node>();
+      const pending = [start];
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (visited.has(node)) continue;
+        visited.add(node);
+        const scope = scan(node);
+        scope.findings.forEach((finding) => record(endpointId, finding));
+        pending.push(...scope.callees);
+      }
+    }
+  }
+  model.relationships = [...relationships.values()];
+  model.diagnostics = [...diagnostics.values()];
+  for (const collection of [model.apps, model.tables, model.endpoints, model.integrations, model.relationships]) {
+    collection.sort((a, b) => a.id.localeCompare(b.id));
+    for (const item of collection) item.evidence.sort((a, b) => a.path.localeCompare(b.path) || (a.line ?? 0) - (b.line ?? 0));
+  }
+  model.diagnostics.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return systemModelSchema.parse(model);
+}

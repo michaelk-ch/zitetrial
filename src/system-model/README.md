@@ -2,8 +2,8 @@
 
 `schema.ts` is the shared contract between the analyzer and viewer. It is ordinary
 TypeScript with only a Zod dependency, so it works without Next.js, React, or file
-system access. The analyzer will read repository files and produce this model;
-the viewer will consume it. Neither is implemented here yet.
+system access. The [analyzer](../analyzer/README.md) reads repository files and
+produces this model for the viewer.
 
 The model describes a single repository snapshot and its shared database:
 
@@ -45,7 +45,7 @@ unresolved findings in diagnostics instead of inventing targets. Empty diagnosti
 does not guarantee complete analysis.
 
 The contract uses only JSON-compatible values. Repository metadata stores a name,
-optional URL, and optional commit SHA. The local `userdata/<project>/<sha>` checkout
+optional URL, and optional commit SHA. The local `userdata/<workspace>/<sha>` checkout
 path is analyzer input and is deliberately absent from the portable model.
 
 Table fields and references, layout, colors, selection state, parsed syntax trees, SQL text, pages, and

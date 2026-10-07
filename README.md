@@ -1,6 +1,6 @@
 # Zitetrial
 
-Next.js App Router project with React, strict TypeScript, ESLint, and CSS Modules.
+Next.js App Router project with React, strict TypeScript, ESLint, and Tailwind CSS.
 
 ## Development
 
@@ -28,6 +28,7 @@ npm start
 
 - `src/app/`: pages, layouts, styles, and server route handlers.
 - `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer.
+- `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.
 - `public/`: static assets.
 - `next.config.ts`: Next.js configuration.
 - `@/*`: import alias for `src/*`.
@@ -35,6 +36,9 @@ npm start
 Keep local secrets in `.env.local` (ignored by Git). Commit dependencies through
 `package.json` and `package-lock.json`; generated builds and `node_modules` are ignored.
 
-Example checkouts live under `userdata/<project>/<sha>`. This directory is excluded
+Example checkouts live under `userdata/<workspace>/<sha>`. This directory is excluded
 from this project's TypeScript and ESLint checks. See
 [`src/system-model/README.md`](src/system-model/README.md) for the v1 contract.
+
+Run `npm run analyze -- userdata/<workspace>/<sha> model.json` to analyze a checkout.
+See [`src/analyzer/README.md`](src/analyzer/README.md) for the API and supported patterns.
