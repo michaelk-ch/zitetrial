@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Integration, SystemModel, Table } from "@/system-snapshot/system-model";
+import type { SystemSnapshot } from "@/system-snapshot";
+import type { Integration, Table } from "@/system-snapshot/system-model";
 import { accessLabel, type ColumnFilter, type Operation, type Usage } from "@/system-snapshot/inference/access-matrix";
-import { defaultAccessOptions, preprocess } from "@/system-snapshot/inference/preprocess";
+import { accessModes, defaultAccessMode, preprocess } from "@/system-snapshot/inference/preprocess";
 import Panel from "../panel";
-import AccessOptionsControls from "./access-options";
+import AccessModeSelect from "./access-options";
 
 type Column = { kind: "table"; entity: Table } | { kind: "integration"; entity: Integration };
 type Condition = Operation | "any";
@@ -56,8 +57,10 @@ function Cells({ usage, columns, rowName, strong }: { usage: Usage; columns: Col
   return <>{cells}<td aria-hidden="true" className="border-b border-line" /></>;
 }
 
-export default function CrudView({ model }: { model: SystemModel }) {
-  const [options, setOptions] = useState(defaultAccessOptions);
+export default function CrudView({ snapshot }: { snapshot: SystemSnapshot }) {
+  const model = snapshot.analysis;
+  const [mode, setMode] = useState(defaultAccessMode);
+  const options = accessModes[mode];
   const columns = useMemo<Column[]>(() => [
     ...[...model.tables].sort(byName).map((entity) => ({ kind: "table" as const, entity })),
     ...[...model.integrations].sort(byName).map((entity) => ({ kind: "integration" as const, entity })),
@@ -67,7 +70,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
   const [filters, setFilters] = useState<ColumnFilter[]>([]);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
-  const { groups: visibleGroups, tables, integrations } = useMemo(() => preprocess(model, options, { query, filters }), [model, options, query, filters]);
+  const { groups: visibleGroups, tables, integrations } = useMemo(() => preprocess(snapshot, options, { query, filters }), [snapshot, options, query, filters]);
   const visibleColumns = useMemo<Column[]>(() => [
     ...tables.map((entity) => ({ kind: "table" as const, entity })),
     ...integrations.map((entity) => ({ kind: "integration" as const, entity })),
@@ -139,8 +142,8 @@ export default function CrudView({ model }: { model: SystemModel }) {
             </optgroup>
           ))}
         </select>
-        <AccessOptionsControls value={options} onChange={setOptions} hidden={columns.length - visibleColumns.length} />
-        <span aria-live="polite" className="ml-auto text-xs text-muted">{filtering ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
+        <AccessModeSelect value={mode} onChange={setMode} hidden={columns.length - visibleColumns.length} />
+        <span aria-live="polite" className="ml-auto text-xs text-muted">{shownEndpoints !== totalEndpoints ? `${shownEndpoints} of ${totalEndpoints}` : totalEndpoints} endpoints</span>
       </div>
 
       {filtering && (
@@ -219,7 +222,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
                     <button type="button" onClick={() => toggleApp(app.id)} aria-expanded={expanded} title={app.description ?? app.name} className="flex h-10 w-full cursor-pointer items-center gap-2 px-3 text-left hover:bg-black/[0.03]">
                       <svg aria-hidden="true" viewBox="0 0 16 16" className={`size-3.5 shrink-0 text-muted transition-transform ${expanded ? "rotate-90" : ""}`}><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
                       <span className="truncate">{app.name}</span>
-                      <span className="font-normal text-faint">{filtering ? `${endpoints.length}/${total}` : total}</span>
+                      <span className="font-normal text-faint">{endpoints.length !== total ? `${endpoints.length}/${total}` : total}</span>
                       {app.visibility !== "unknown" && <span className="ml-auto rounded border border-line-strong bg-white px-1.5 py-0.5 text-[10px] font-normal text-muted">{app.visibility}</span>}
                     </button>
                   </th>

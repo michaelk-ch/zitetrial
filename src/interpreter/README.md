@@ -18,7 +18,9 @@ The tab groups endpoints by application and capability, orders them by prominenc
 and lets you inspect primary/supporting/secondary/uncertain access roles and their
 call paths. **Download snapshot** exports both analysis and interpretation, including
 usage sources. Workspace loading generates missing interpretation batches; changing
-tabs makes no API calls. The graph and table views display the analyzed facts.
+tabs makes no API calls. The graph and table views display the analyzed facts; their
+**Interpreted** mode hides utility endpoints and keeps each endpoint's primary accesses
+(falling back to uncertain, then supporting, then secondary ones when none are primary).
 
 From the CLI, first analyze a checkout, then interpret its JSON:
 

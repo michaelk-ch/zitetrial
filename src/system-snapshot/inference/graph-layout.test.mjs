@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { systemModelSchema } from "../system-model.ts";
 import { edgeKind, graphSizes, layoutGraph, packColumn } from "./graph-layout.ts";
-import { preprocess } from "./preprocess.ts";
+import { accessModes, preprocess } from "./preprocess.ts";
 
 const model = systemModelSchema.parse({
   schemaVersion: 1, repository: { name: "Graph example" },
@@ -31,7 +31,7 @@ const model = systemModelSchema.parse({
     { kind: "table-reference", sourceTableId: "payments", targetTableId: "users" },
   ],
 });
-const data = preprocess(model, { showJoins: true, prioritize: false, hideUnused: false });
+const data = preprocess({ analysis: model }, accessModes.all);
 const edgeSummary = (layout) => layout.edges.map((edge) => `${edge.sourceKey}->${edge.targetKey}:${edge.kind}:${edge.weight}`).sort();
 const boxes = (layout) => [...layout.apps, ...layout.tables, ...layout.integrations];
 

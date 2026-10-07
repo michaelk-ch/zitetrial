@@ -30,9 +30,9 @@ export default function SystemViews({ snapshot }: { snapshot: SystemSnapshot }) 
             </EmptyState>
           ),
         },
-        { id: "graph", label: "Graph", content: <GraphView model={model} /> },
+        { id: "graph", label: "Graph", content: <GraphView snapshot={snapshot} /> },
         { id: "interpretation", label: "Interpretation", content: <InterpretationView snapshot={snapshot} /> },
-        { id: "crud", label: "Table", content: <CrudView model={model} /> },
+        { id: "crud", label: "Table", content: <CrudView snapshot={snapshot} /> },
         { id: "raw", label: "Raw", content: <RawView snapshot={snapshot} /> },
       ]}
     />

@@ -1,15 +1,16 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { SystemSnapshot } from "@/system-snapshot";
 import type { SystemModel } from "@/system-snapshot/system-model";
 import { accessLabel, type Operation } from "@/system-snapshot/inference/access-matrix";
-import { defaultAccessOptions, preprocess } from "@/system-snapshot/inference/preprocess";
+import { accessModes, defaultAccessMode, preprocess } from "@/system-snapshot/inference/preprocess";
 import {
   edgeKind, graphSizes, layoutGraph,
   type EdgeKind, type GraphApp, type GraphEdge, type GraphFocus, type GraphIntegration, type GraphLayout, type GraphTable,
 } from "@/system-snapshot/inference/graph-layout";
 import Panel from "../panel";
-import AccessOptionsControls from "./access-options";
+import AccessModeSelect from "./access-options";
 
 // The graph is plain SVG with inline presentation attributes, so the exported image matches the screen.
 const SANS = "Arial, Helvetica, sans-serif";
@@ -349,7 +350,8 @@ async function exportPng(svg: SVGSVGElement, fileName: string, highlight: string
 
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "graph";
 
-export default function GraphView({ model }: { model: SystemModel }) {
+export default function GraphView({ snapshot }: { snapshot: SystemSnapshot }) {
+  const model = snapshot.analysis;
   const [requestedFocus, setFocus] = useState<GraphFocus>(null);
   // Ignore a focus that no longer exists, e.g. after the model changed.
   const focus = requestedFocus && ({ app: model.apps, table: model.tables, integration: model.integrations }[requestedFocus.kind] as { id: string }[])
@@ -358,12 +360,15 @@ export default function GraphView({ model }: { model: SystemModel }) {
   // A clicked endpoint row stays highlighted (and is exported that way) until clicked again.
   const [pinned, setPinned] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [accessOptions, setAccessOptions] = useState(defaultAccessOptions);
+  const [accessMode, setAccessMode] = useState(defaultAccessMode);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Unused tables and integrations are hidden from the overview but can still be focused.
-  const data = useMemo(() => preprocess(model, { ...accessOptions, hideUnused: accessOptions.hideUnused && !focus }), [model, accessOptions, focus]);
+  const data = useMemo(() => {
+    const options = accessModes[accessMode];
+    return preprocess(snapshot, { ...options, hideUnused: options.hideUnused && !focus });
+  }, [snapshot, accessMode, focus]);
   // Only focused views have a subtitle line under the title.
   const header = focus ? 156 : 132;
   const layout = useMemo(() => layoutGraph(data, focus, { top: header }), [data, focus, header]);
@@ -456,9 +461,9 @@ export default function GraphView({ model }: { model: SystemModel }) {
         <span className="text-faint max-[900px]:hidden">
           {focus ? "Hover to trace connections; click an endpoint to pin them. Esc goes back." : "Click an app, table or integration to focus it. Hover to trace connections."}
         </span>
-        <AccessOptionsControls
-          value={accessOptions}
-          onChange={setAccessOptions}
+        <AccessModeSelect
+          value={accessMode}
+          onChange={setAccessMode}
           hidden={model.tables.length + model.integrations.length - data.tables.length - data.integrations.length}
         />
         <select

@@ -1,4 +1,5 @@
 import type { App, Endpoint, SystemModel, TableOperation } from "../system-model.ts";
+import type { AccessRole, Interpretation } from "../interpretation.ts";
 
 export type Operation = TableOperation;
 type Access = Map<string, Set<Operation>>;
@@ -14,6 +15,30 @@ export type ColumnFilter =
 
 const emptyUsage = (): Usage => ({ access: new Map(), integrations: new Set() });
 const operationPriority: Record<Operation, number> = { create: 3, delete: 3, update: 2, read: 1, join: 0, unknown: -1 };
+// Uncertain usages may be primary, so they outrank usages known to be supporting or secondary.
+const rolePriority: AccessRole[] = ["primary", "uncertain", "supporting", "secondary"];
+const usageKey = (kind: "table" | "integration", id: string, operation: Operation | null) => JSON.stringify([kind, id, operation]);
+
+/**
+ * Per shown endpoint, the targets and operations of its highest-priority interpreted usages.
+ * Utility endpoints are omitted. A target/operation is kept if any of its usages is kept.
+ */
+function interpretedUsages(interpretation: Interpretation, showJoins: boolean): Map<string, Set<string>> {
+  const usages = new Map(interpretation.usages.map((usage) => [usage.id, usage]));
+  const kept = new Map<string, Set<string>>();
+  for (const endpoint of interpretation.endpoints) {
+    if (endpoint.prominence === "utility") continue;
+    const keys = new Set<string>();
+    for (const role of rolePriority) {
+      for (const usage of endpoint.accesses[role].map((id) => usages.get(id)!)) {
+        if (showJoins || usage.operation !== "join") keys.add(usageKey(usage.target.kind, usage.target.id, usage.operation));
+      }
+      if (keys.size) break;
+    }
+    kept.set(endpoint.endpointId, keys);
+  }
+  return kept;
+}
 
 function merge(access: Access, tableId: string, operations: Iterable<Operation>) {
   const combined = access.get(tableId) ?? new Set<Operation>();
@@ -21,16 +46,26 @@ function merge(access: Access, tableId: string, operations: Iterable<Operation>)
   access.set(tableId, combined);
 }
 
-/** Apply visibility and priority per endpoint before filtering and app aggregation. */
-export function buildAccessMatrix(model: SystemModel, { showJoins = true, prioritize = false }: { showJoins?: boolean; prioritize?: boolean } = {}): MatrixGroup[] {
+/**
+ * Apply visibility and priority per endpoint before filtering and app aggregation. `prioritize`
+ * keeps each endpoint's highest-priority operations. With an `interpretation`, utility endpoints
+ * are dropped and each endpoint keeps the usages of its highest role (primary first).
+ */
+export function buildAccessMatrix(model: SystemModel, { showJoins = true, prioritize = false, interpretation }: {
+  showJoins?: boolean; prioritize?: boolean; interpretation?: Interpretation;
+} = {}): MatrixGroup[] {
+  const interpreted = interpretation && interpretedUsages(interpretation, showJoins);
   const byEndpoint = new Map<string, Usage>();
   for (const relationship of model.relationships) {
     if (relationship.kind === "table-reference") continue;
+    const kept = interpreted?.get(relationship.endpointId);
+    if (interpreted && !kept) continue;
     const usage = byEndpoint.get(relationship.endpointId) ?? emptyUsage();
     if (relationship.kind === "table-access") {
-      const operations = relationship.operations.filter((operation) => showJoins || operation !== "join");
+      const operations = relationship.operations.filter((operation) => (showJoins || operation !== "join")
+        && (!kept || kept.has(usageKey("table", relationship.tableId, operation))));
       if (operations.length) merge(usage.access, relationship.tableId, operations);
-    } else usage.integrations.add(relationship.integrationId);
+    } else if (!kept || kept.has(usageKey("integration", relationship.integrationId, null))) usage.integrations.add(relationship.integrationId);
     byEndpoint.set(relationship.endpointId, usage);
   }
   if (prioritize) {
@@ -47,6 +82,7 @@ export function buildAccessMatrix(model: SystemModel, { showJoins = true, priori
   }
   const byApp = new Map<string, MatrixRow[]>();
   for (const endpoint of model.endpoints) {
+    if (interpreted && !interpreted.has(endpoint.id)) continue;
     const endpoints = byApp.get(endpoint.appId) ?? [];
     endpoints.push({ endpoint, ...(byEndpoint.get(endpoint.id) ?? emptyUsage()) });
     byApp.set(endpoint.appId, endpoints);
