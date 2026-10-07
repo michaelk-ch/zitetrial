@@ -11,6 +11,7 @@ import {
 } from "@/system-snapshot/inference/graph-layout";
 import Panel from "../panel";
 import AccessModeSelect from "./access-options";
+import FocusToolbar, { download, slug } from "./focus-toolbar";
 
 // The graph is plain SVG with inline presentation attributes, so the exported image matches the screen.
 const SANS = "Arial, Helvetica, sans-serif";
@@ -23,12 +24,12 @@ const BORDER = "#dfe1e4";
 // Any write is red; read-only access is blue.
 const colors: Record<EdgeKind, string> = { read: "#3b7ddd", write: "#e5484d", unknown: "#9aa0a6", call: "#12a594" };
 const verbs: Record<Operation, string> = { read: "reads", join: "joins", create: "creates", update: "updates", delete: "deletes", unknown: "accesses (unclassified)" };
-const visibility = {
+export const visibility = {
   public: { label: "Public", fill: "#e6f4ec", ink: "#257047" },
   internal: { label: "Internal", fill: "#eef0f5", ink: "#4d5670" },
   unknown: { label: "", fill: "#f1f2f3", ink: MUTED },
 };
-const categories: Record<string, { fill: string; ink: string; icon: ReactNode }> = {
+export const categories: Record<string, { fill: string; ink: string; icon: ReactNode }> = {
   ai: { fill: "#f1ebfd", ink: "#6941c6", icon: <path d="M8 1.5l1.6 4.9 4.9 1.6-4.9 1.6L8 14.5l-1.6-4.9L1.5 8l4.9-1.6z" /> },
   email: { fill: "#e7f0fc", ink: "#2c64b0", icon: <><rect x="1.5" y="3" width="13" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M2.5 4.5L8 8.8l5.5-4.3" fill="none" stroke="currentColor" strokeWidth="1.5" /></> },
   payments: { fill: "#e6f4ec", ink: "#257047", icon: <><rect x="1.5" y="3.5" width="13" height="9" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M1.5 6.5h13" stroke="currentColor" strokeWidth="2" /></> },
@@ -37,7 +38,6 @@ const categories: Record<string, { fill: string; ink: string; icon: ReactNode }>
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 const titleCase = (text: string) => text.length <= 2 ? text.toUpperCase() : text[0].toUpperCase() + text.slice(1);
-const focusKey = (focus: GraphFocus) => focus ? `${focus.kind}:${focus.id}` : "";
 
 let measureContext: CanvasRenderingContext2D | null | undefined;
 function textWidth(text: string, font: string) {
@@ -141,8 +141,8 @@ function Icon({ x, y, size = 16, color, children }: { x: number; y: number; size
   return <svg x={x} y={y} width={size} height={size} viewBox="0 0 16 16" color={color} fill={color} aria-hidden="true">{children}</svg>;
 }
 
-const tableIcon = <><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M1.5 6.5h13M6 6.5v7" stroke="currentColor" strokeWidth="1.4" /></>;
-const appIcon = <><rect x="1.5" y="2" width="13" height="12" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M1.5 5.5h13" stroke="currentColor" strokeWidth="1.5" /><circle cx="3.8" cy="3.8" r=".6" /><circle cx="5.6" cy="3.8" r=".6" /></>;
+export const tableIcon = <><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M1.5 6.5h13M6 6.5v7" stroke="currentColor" strokeWidth="1.4" /></>;
+export const appIcon = <><rect x="1.5" y="2" width="13" height="12" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M1.5 5.5h13" stroke="currentColor" strokeWidth="1.5" /><circle cx="3.8" cy="3.8" r=".6" /><circle cx="5.6" cy="3.8" r=".6" /></>;
 
 function Header({ kicker, title, subtitle, width, divider }: { kicker: string; title: string; subtitle: string; width: number; divider: number }) {
   const { pad } = graphSizes;
@@ -338,17 +338,11 @@ async function exportPng(svg: SVGSVGElement, fileName: string, highlight: string
     context.drawImage(image, 0, 0, width, height);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("Could not encode the image");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = fileName;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    download(blob, fileName);
   } finally {
     URL.revokeObjectURL(url);
   }
 }
-
-const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "graph";
 
 export default function GraphView({ snapshot }: { snapshot: SystemSnapshot }) {
   const model = snapshot.analysis;
@@ -426,12 +420,6 @@ export default function GraphView({ snapshot }: { snapshot: SystemSnapshot }) {
 
   if (model.apps.length === 0) return <Panel className="p-8 text-sm text-muted">No apps found in this workspace.</Panel>;
 
-  const sorted = (entities: { id: string; name: string }[]) => [...entities].sort((a, b) => a.name.localeCompare(b.name));
-  const options: ["app" | "table" | "integration", string, { id: string; name: string }[]][] = [
-    ["app", "Applications", sorted(model.apps)],
-    ["table", "Tables", sorted(model.tables)],
-    ["integration", "Integrations", sorted(model.integrations)],
-  ];
   const focusName = focus && names.get(`${focus.kind}:${focus.id}`);
   const commit = model.repository.commit?.slice(0, 7);
 
@@ -447,51 +435,21 @@ export default function GraphView({ snapshot }: { snapshot: SystemSnapshot }) {
 
   return (
     <Panel>
-      <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3 text-xs">
-        <nav aria-label="Graph focus" className="flex min-w-0 items-center gap-1.5 text-[13px]">
-          {focus ? (
-            <>
-              <button type="button" onClick={() => changeFocus(null)} className="cursor-pointer rounded px-1 text-muted hover:text-ink hover:underline">All apps</button>
-              <span aria-hidden="true" className="text-faint">/</span>
-              <span className="truncate font-medium" aria-current="page">{focusName}</span>
-              <button type="button" onClick={() => changeFocus(null)} aria-label="Clear focus" title="Clear focus (Esc)" className="grid size-6 cursor-pointer place-items-center rounded text-faint hover:bg-subtle hover:text-ink">×</button>
-            </>
-          ) : <span className="font-medium">All apps</span>}
-        </nav>
-        <span className="text-faint max-[900px]:hidden">
-          {focus ? "Hover to trace connections; click an endpoint to pin them. Esc goes back." : "Click an app, table or integration to focus it. Hover to trace connections."}
-        </span>
+      <FocusToolbar
+        model={model}
+        focus={focus}
+        focusName={focusName ?? undefined}
+        onFocus={changeFocus}
+        hint={focus ? "Hover to trace connections; click an endpoint to pin them. Esc goes back." : "Click an app, table or integration to focus it. Hover to trace connections."}
+        exporting={exporting}
+        onExport={onExport}
+      >
         <AccessModeSelect
           value={accessMode}
           onChange={setAccessMode}
           hidden={model.tables.length + model.integrations.length - data.tables.length - data.integrations.length}
         />
-        <select
-          value={focusKey(focus)}
-          onChange={(event) => {
-            const [kind, ...id] = event.target.value.split(":");
-            changeFocus(kind ? { kind: kind as "app" | "table" | "integration", id: id.join(":") } : null);
-          }}
-          aria-label="Focus on"
-          className="ml-auto h-8 cursor-pointer rounded-md border border-line-strong bg-white px-2 text-xs text-muted"
-        >
-          <option value="">Focus on…</option>
-          {options.map(([kind, label, entities]) => entities.length > 0 && (
-            <optgroup key={kind} label={label}>
-              {entities.map((entity) => <option key={entity.id} value={`${kind}:${entity.id}`}>{entity.name}</option>)}
-            </optgroup>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={onExport}
-          disabled={exporting}
-          className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-line-strong bg-white px-3 font-medium hover:bg-subtle disabled:cursor-wait disabled:opacity-60"
-        >
-          <svg aria-hidden="true" viewBox="0 0 16 16" className="size-3.5"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          {exporting ? "Exporting…" : "Export PNG"}
-        </button>
-      </div>
+      </FocusToolbar>
       <div ref={scrollRef} className="max-h-[calc(100vh-230px)] min-h-[420px] overflow-auto bg-[#fafaf9]">
         <svg
           ref={svgRef}

@@ -1,8 +1,8 @@
 import type { SystemSnapshot } from "@/system-snapshot";
 import CrudView from "./crud-view";
-import EmptyState from "../empty-state";
 import GraphView from "./graph-view";
 import InterpretationView from "./interpretation-view";
+import OverviewView from "./overview-view";
 import RawView from "./raw-view";
 import Tabs from "../tabs";
 
@@ -18,18 +18,7 @@ export default function SystemViews({ snapshot }: { snapshot: SystemSnapshot }) 
         </span>
       }
       tabs={[
-        {
-          id: "overview",
-          label: "Overview",
-          content: (
-            <EmptyState
-              title="Your system, at a glance"
-              footer={<span className="inline-block rounded-md border border-line bg-[#f5f5f5] px-[9px] py-[5px] text-[11px] text-muted">Visualization coming soon</span>}
-            >
-              Apps, tables, and integrations will come together here. Choose a workspace in the sidebar to explore a different system.
-            </EmptyState>
-          ),
-        },
+        { id: "overview", label: "Overview", content: <OverviewView snapshot={snapshot} /> },
         { id: "graph", label: "Graph", content: <GraphView snapshot={snapshot} /> },
         { id: "interpretation", label: "Interpretation", content: <InterpretationView snapshot={snapshot} /> },
         { id: "crud", label: "Table", content: <CrudView snapshot={snapshot} /> },
