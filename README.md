@@ -17,6 +17,7 @@ Open http://localhost:3000. Edit `src/app/page.tsx` to start building.
 ```sh
 npm run lint
 npm run typecheck
+npm test
 npm run build
 npm start
 ```
@@ -26,9 +27,14 @@ npm start
 ## Structure
 
 - `src/app/`: pages, layouts, styles, and server route handlers.
+- `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer.
 - `public/`: static assets.
 - `next.config.ts`: Next.js configuration.
 - `@/*`: import alias for `src/*`.
 
 Keep local secrets in `.env.local` (ignored by Git). Commit dependencies through
 `package.json` and `package-lock.json`; generated builds and `node_modules` are ignored.
+
+Example checkouts live under `userdata/<project>/<sha>`. This directory is excluded
+from this project's TypeScript and ESLint checks. See
+[`src/system-model/README.md`](src/system-model/README.md) for the v1 contract.

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Zitetrial",
-  description: "A new project built with Next.js and TypeScript.",
+  title: "Zite System Viewer",
+  description: "Explore the apps, tables, and integrations in your Zite projects.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
