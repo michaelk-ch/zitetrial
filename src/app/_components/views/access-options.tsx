@@ -1,6 +1,6 @@
 "use client";
 
-import type { AccessOptions } from "@/system-model/inference/preprocess";
+import type { AccessOptions } from "@/system-snapshot/inference/preprocess";
 
 const options: [keyof AccessOptions, string, string?][] = [
   ["hideUnused", "Hide unused columns"],

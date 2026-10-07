@@ -13,12 +13,12 @@ Put the usual server-side secret in the project's ignored `.env.local`:
 OPENAI_API_KEY=your-key
 ```
 
-Open a workspace's **Interpretation** tab and click **Generate interpretation**.
+Open a workspace to build or load its complete snapshot, then choose **Interpretation**.
 The tab groups endpoints by application and capability, orders them by prominence,
 and lets you inspect primary/supporting/secondary/uncertain access roles and their
-call paths. **Download JSON** exports the complete sidecar, including usage sources.
-Opening the tab only checks the cache; it does not make paid requests. The current
-graph and CRUD views continue to display the analyzed facts.
+call paths. **Download snapshot** exports both analysis and interpretation, including
+usage sources. Workspace loading generates missing interpretation batches; changing
+tabs makes no API calls. The graph and table views display the analyzed facts.
 
 From the CLI, first analyze a checkout, then interpret its JSON:
 
@@ -99,7 +99,7 @@ source-reading or graph-retrieval tools for the model.
 
 ## Caching
 
-Results live in `userdata/.interpretations/`, which is ignored by Git and workspace
+Results live in `userdata/.snapshots/`, which is ignored by Git and workspace
 discovery. Pass `--cache-dir` or `cacheDirectory` to use another directory.
 
 - Each validated API result is cached by its exact input, prompt, output schema,
@@ -118,9 +118,11 @@ discovery. Pass `--cache-dir` or `cacheDirectory` to use another directory.
   describe total work represented by the result, including reused batches; they
   are not a per-run bill. CLI progress identifies cache hits.
 
-The viewer's `POST /api/interpretation` accepts `{ model, generate }`. With
-`generate: false` it performs a read-only cache lookup; `true` generates missing
-work. It uses the exact analyzed snapshot already displayed by the viewer.
+The viewer calls `POST /api/workspaces/[workspace]/snapshot` once for a complete
+`{ analysis, interpretation }` result. The shared pipeline analyzes the selected
+checkout and passes those exact facts into the interpreter. Clients do not upload
+a model or coordinate stages. `readInterpretation(model)` remains a read-only
+cache lookup for internal/debugging use.
 
 Offline tests cover provenance grouping, response coverage, cache invalidation,
 resuming partial runs, concurrent deduplication, corrupt caches, and the SDK wire

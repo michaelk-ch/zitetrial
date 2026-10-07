@@ -8,9 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/system-model/*.test.mjs src/system-model/inference/*.test.mjs src/analyzer/*.test.mjs src/interpreter/*.test.mjs src/workspaces/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/system-snapshot/*.test.mjs src/system-snapshot/inference/*.test.mjs src/analyzer/*.test.mjs src/interpreter/*.test.mjs src/workspaces/*.test.mjs",
     "analyze": "node --experimental-strip-types src/analyzer/cli.ts",
-    "interpret": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --experimental-strip-types src/interpreter/cli.ts"
+    "interpret": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --experimental-strip-types src/interpreter/cli.ts",
+    "snapshot": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --experimental-strip-types src/system-snapshot/cli.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.1",

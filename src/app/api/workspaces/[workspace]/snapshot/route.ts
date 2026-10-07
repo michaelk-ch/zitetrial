@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
-import type { SystemModel } from "@/system-model/schema";
+import type { SystemModel } from "@/system-snapshot/system-model";
+import { buildSystemSnapshot } from "@/system-snapshot/build";
 import { checkoutPath, findWorkspace } from "@/workspaces/discover";
 
 /**
@@ -16,16 +17,16 @@ function analyzeInWorker(directory: string): Promise<SystemModel> {
   });
 }
 
-/** Analyzes a workspace checkout and returns its system model as JSON. */
-export async function GET(_request: Request, { params }: RouteContext<"/api/workspaces/[workspace]/model">) {
+/** Build a complete snapshot, reusing cached analysis and interpretation whenever possible. */
+export async function POST(_request: Request, { params }: RouteContext<"/api/workspaces/[workspace]/snapshot">) {
   const { workspace: id } = await params;
   const workspace = await findWorkspace(id);
   if (!workspace) return Response.json({ error: `Unknown workspace: ${id}` }, { status: 404 });
   // Revisions are sorted by discovery; use the first until revision selection exists.
   const checkout = checkoutPath(workspace.id, workspace.revisions[0]);
   try {
-    return Response.json(await analyzeInWorker(checkout));
+    return Response.json(await buildSystemSnapshot(checkout, { analyze: analyzeInWorker }));
   } catch (error) {
-    return Response.json({ error: `Analysis failed: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 });
+    return Response.json({ error: `Snapshot failed: ${error instanceof Error ? error.message : String(error)}` }, { status: 500 });
   }
 }

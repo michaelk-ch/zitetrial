@@ -1,6 +1,7 @@
-import type { CallGraph, SystemModel } from "../system-model/schema.ts";
-import type { EndpointResponse, Usage } from "./schema.ts";
-import { roles } from "./schema.ts";
+import type { CallGraph, SystemModel } from "../system-snapshot/system-model.ts";
+import type { Usage } from "../system-snapshot/interpretation.ts";
+import type { EndpointResponse } from "./responses.ts";
+import { roles } from "../system-snapshot/interpretation.ts";
 
 type CallNode = CallGraph["nodes"][number];
 const sorted = <T extends { id: string }>(items: T[]) => [...items].sort((a, b) => a.id.localeCompare(b.id));

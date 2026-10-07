@@ -1,4 +1,4 @@
-import type { SystemModel } from "@/system-model/schema";
+import type { SystemSnapshot } from "@/system-snapshot";
 import CrudView from "./crud-view";
 import EmptyState from "../empty-state";
 import GraphView from "./graph-view";
@@ -6,7 +6,8 @@ import InterpretationView from "./interpretation-view";
 import RawView from "./raw-view";
 import Tabs from "../tabs";
 
-export default function SystemViews({ model }: { model: SystemModel }) {
+export default function SystemViews({ snapshot }: { snapshot: SystemSnapshot }) {
+  const { analysis: model } = snapshot;
   const { commit } = model.repository;
   return (
     <Tabs
@@ -30,19 +31,19 @@ export default function SystemViews({ model }: { model: SystemModel }) {
           ),
         },
         { id: "graph", label: "Graph", content: <GraphView model={model} /> },
-        { id: "interpretation", label: "Interpretation", content: <InterpretationView model={model} /> },
+        { id: "interpretation", label: "Interpretation", content: <InterpretationView snapshot={snapshot} /> },
         { id: "crud", label: "Table", content: <CrudView model={model} /> },
-        { id: "raw", label: "Raw", content: <RawView model={model} /> },
+        { id: "raw", label: "Raw", content: <RawView snapshot={snapshot} /> },
       ]}
     />
   );
 }
 
-/** Mirrors the SystemViews layout while the workspace is analyzed. */
+/** Mirrors the SystemViews layout while the snapshot is built. */
 export function SystemViewsSkeleton() {
   return (
     <div role="status">
-      <span className="sr-only">Analyzing workspace…</span>
+      <p className="mb-4 text-sm text-muted">Loading system snapshot… New workspaces are analyzed and interpreted before opening.</p>
       <div aria-hidden="true" className="motion-safe:animate-pulse">
         <div className="mb-5 flex items-center justify-between gap-3">
           <div className="flex h-9 gap-2 rounded-lg border border-line bg-subtle p-1">

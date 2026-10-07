@@ -1,13 +1,13 @@
 "use client";
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import type { SystemModel } from "@/system-model/schema";
-import { accessLabel, type Operation } from "@/system-model/inference/access-matrix";
-import { defaultAccessOptions, preprocess } from "@/system-model/inference/preprocess";
+import type { SystemModel } from "@/system-snapshot/system-model";
+import { accessLabel, type Operation } from "@/system-snapshot/inference/access-matrix";
+import { defaultAccessOptions, preprocess } from "@/system-snapshot/inference/preprocess";
 import {
   edgeKind, graphSizes, layoutGraph,
   type EdgeKind, type GraphApp, type GraphEdge, type GraphFocus, type GraphIntegration, type GraphLayout, type GraphTable,
-} from "@/system-model/inference/graph-layout";
+} from "@/system-snapshot/inference/graph-layout";
 import Panel from "../panel";
 import AccessOptionsControls from "./access-options";
 

@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { AIRequest } from "./openai.ts";
 import type { Prepared } from "./prepare.ts";
-import { overviewResponseSchema, prominenceSchema, roles } from "./schema.ts";
-import type { AccessRole } from "./schema.ts";
+import { prominenceSchema, roles } from "../system-snapshot/interpretation.ts";
+import type { AccessRole } from "../system-snapshot/interpretation.ts";
 
 const sentence = z.string().min(1).max(240);
 const role = z.enum(roles);
@@ -41,7 +41,7 @@ export function overviewOutput(prepared: Prepared) {
   const endpoint = z.strictObject({ capability: z.string().nullable(), prominence: prominenceSchema });
   const schema = z.strictObject({
     apps: z.strictObject(Object.fromEntries(prepared.apps.map(({ ref }) => [ref, app]))),
-    capabilities: overviewResponseSchema.shape.capabilities,
+    capabilities: z.array(z.strictObject({ id: z.string(), label: z.string(), purpose: z.string() })),
     endpoints: z.strictObject(Object.fromEntries(prepared.endpoints.map(({ ref }) => [ref, endpoint]))),
   });
   return output(schema, "system_overview", (value) => ({

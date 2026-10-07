@@ -3,12 +3,12 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { systemModelSchema } from "../system-model/schema.ts";
+import { systemModelSchema } from "../system-snapshot/system-model.ts";
 import { interpretSystem, readInterpretation } from "./index.ts";
 import { endpointOutput, overviewOutput } from "./format.ts";
 import { openAIGenerator } from "./openai.ts";
 import { endpointBatches, endpointInput, prepareInterpretation } from "./prepare.ts";
-import { validateEndpoints, validateOverview } from "./validate.ts";
+import { endpointResponseSchemaFor, overviewResponseSchemaFor } from "./responses.ts";
 
 function fixture(count = 1) {
   const access = (tableId, operation) => ({ kind: "table-access", tableId, operation, evidence: ['data.ts:1'] });
@@ -102,7 +102,7 @@ test('validates coverage, roles, and references across both AI passes', () => {
   ]) {
     const reply = endpointReply(input);
     mutate(reply);
-    assert.throws(() => validateEndpoints(reply, prepared.endpoints));
+    assert.throws(() => endpointResponseSchemaFor(prepared.endpoints).parse(reply));
   }
   for (const mutate of [
     (r) => r.apps.pop(),
@@ -112,7 +112,7 @@ test('validates coverage, roles, and references across both AI passes', () => {
   ]) {
     const reply = overviewReply(input);
     mutate(reply);
-    assert.throws(() => validateOverview(reply, prepared));
+    assert.throws(() => overviewResponseSchemaFor(prepared).parse(reply));
   }
 });
 
@@ -160,7 +160,7 @@ test('coverage errors identify the endpoint and exact missing and incorrect usag
   const prepared = prepareInterpretation(fixture());
   const reply = endpointReply(endpointInput(prepared, prepared.endpoints));
   reply.endpoints[0].accesses.primary = ['t1'];
-  assert.throws(() => validateEndpoints(reply, prepared.endpoints), /usage for e1.*missing: u2; unknown: t1/);
+  assert.throws(() => endpointResponseSchemaFor(prepared.endpoints).parse(reply), /missing: u2; unknown: t1/);
 });
 
 test('caches complete interpretations without a key and invalidates only changed batches', async (t) => {
@@ -277,7 +277,7 @@ test('calls Responses with strict JSON, disables storage, and rejects incomplete
   const generate = openAIGenerator('test-api-key');
   const result = await generate(requests[0]);
   assert.deepEqual(result.tokens, { input: 10, output: 20 });
-  validateEndpoints(result.value, prepared.endpoints);
+  endpointResponseSchemaFor(prepared.endpoints).parse(result.value);
   mode = 'incomplete';
   await assert.rejects(generate(requests[0]), /incomplete/);
   mode = 'refusal';

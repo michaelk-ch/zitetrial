@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { analyzeRepository } from "./index.ts";
-import { serializeSystemModel } from "../system-model/schema.ts";
+import { serializeSystemModel } from "../system-snapshot/system-model.ts";
 
 const args = process.argv.slice(2);
 const benchmark = args[0] === "--benchmark";

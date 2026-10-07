@@ -1,4 +1,4 @@
-import type { App, Endpoint, SystemModel, TableOperation } from "../schema.ts";
+import type { App, Endpoint, SystemModel, TableOperation } from "../system-model.ts";
 
 export type Operation = TableOperation;
 type Access = Map<string, Set<Operation>>;

@@ -27,9 +27,9 @@ npm start
 ## Structure
 
 - `src/app/`: routes only (layout, pages, `loading.tsx`, `not-found.tsx`) plus theme tokens in `globals.css`.
-- `src/app/api/workspaces/[workspace]/model`: the only place the app runs the analyzer, in a worker thread so it never blocks the server; returns the system model JSON.
-- `src/app/_components/`: shared viewer UI; `views/` holds the system views (overview, graph, raw, CRUD) and their skeleton. The workspace page fetches the model from the API in the browser with TanStack Query.
-- `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer, plus derived views in `inference/`.
+- `src/app/api/workspaces/[workspace]/snapshot`: one POST route that returns analysis and interpretation; analysis runs in a worker so it never blocks the server.
+- `src/app/_components/`: shared viewer UI; `views/` holds the overview, graph, interpretation, raw, and table views. The workspace page fetches one snapshot with TanStack Query.
+- `src/system-snapshot/`: shared Zod contracts in `system-model.ts`, `interpretation.ts`, and `index.ts`; server orchestration in `build.ts`, plus derived views in `inference/`.
 - `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.
 - `src/interpreter/`: cached OpenAI interpretation of analyzed facts, with a reusable function and CLI.
 - `public/`: static assets.
@@ -41,7 +41,7 @@ Keep local secrets in `.env.local` (ignored by Git). Commit dependencies through
 
 Example checkouts live under `userdata/<workspace>/<sha>`. This directory is excluded
 from this project's TypeScript and ESLint checks. See
-[`src/system-model/README.md`](src/system-model/README.md) for the v1 contract.
+[`src/system-snapshot/README.md`](src/system-snapshot/README.md) for the v1 contract.
 
 To add a repository, use **+ Import** in the sidebar and either:
 
@@ -55,8 +55,10 @@ It is written to `userdata/<workspace>/<commit>`, where the workspace is the keb
 Run `npm run analyze -- userdata/<workspace>/<sha> model.json` to analyze a checkout.
 See [`src/analyzer/README.md`](src/analyzer/README.md) for the API and supported patterns.
 
-For AI interpretation, set `OPENAI_API_KEY` in `.env.local` and use the workspace's
-**Interpretation** tab, or run `npm run interpret -- model.json interpretation.json`.
-Results and completed batches are cached in `userdata/.interpretations/`.
+Set `OPENAI_API_KEY` in `.env.local` and open a workspace to build its complete
+snapshot, or run `npm run snapshot -- userdata/<workspace>/<sha> snapshot.json`.
+The result is `{ analysis, interpretation }`; both are required. Analysis results,
+interpretations, and completed AI batches are cached in `userdata/.snapshots/`.
+The individual `analyze` and `interpret` commands remain available for debugging.
 See [`src/interpreter/README.md`](src/interpreter/README.md) for the schema, prompts,
 model selection, dry runs, and cache behavior.

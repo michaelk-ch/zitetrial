@@ -1,64 +1,37 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { SystemModel } from "@/system-model/schema";
-import { interpretationSchema, roles } from "@/interpreter/schema";
-import type { Interpretation } from "@/interpreter/schema";
+import type { SystemSnapshot } from "@/system-snapshot";
+import { roles } from "@/system-snapshot/interpretation";
 import Panel from "../panel";
 
-async function fetchInterpretation(model: SystemModel, generate: boolean) {
-  const response = await fetch("/api/interpretation", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, generate }),
-  });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error ?? "Interpretation failed.");
-  return { result: body.result ? interpretationSchema.parse(body.result) : null, configured: Boolean(body.configured) };
-}
-
-function download(result: Interpretation) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }));
+function download(snapshot: SystemSnapshot) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = "interpretation.json";
+  link.download = "system-snapshot.json";
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 const prominenceOrder = { core: 0, supporting: 1, utility: 2, uncertain: 3 };
 
-export default function InterpretationView({ model }: { model: SystemModel }) {
-  const client = useQueryClient();
-  const queryKey = ["interpretation", model];
-  const query = useQuery({ queryKey, queryFn: () => fetchInterpretation(model, false), staleTime: Infinity, retry: false });
-  const generation = useMutation({
-    mutationFn: () => fetchInterpretation(model, true), retry: false,
-    onSuccess: (result) => client.setQueryData(queryKey, result),
-  });
-  const result = query.data?.result;
-  const error = generation.error ?? query.error;
+export default function InterpretationView({ snapshot }: { snapshot: SystemSnapshot }) {
+  const { analysis: model, interpretation: result } = snapshot;
   const endpoints = new Map(model.endpoints.map((e) => [e.id, e]));
   const targets = new Map([...model.tables, ...model.integrations].map((target) => [target.id, target.name]));
   const nodes = new Map(model.callGraph.nodes.map((node) => [node.id, node]));
-  const usages = new Map(result?.usages.map((usage) => [usage.id, usage]));
+  const usages = new Map(result.usages.map((usage) => [usage.id, usage]));
   const button = "cursor-pointer rounded-md border border-line-strong bg-white px-3 py-1.5 text-xs font-medium hover:bg-subtle disabled:cursor-default disabled:opacity-50";
 
   return (
     <div className="space-y-4">
-      <Panel title="Interpretation" meta={result ? `Generated ${new Date(result.createdAt).toLocaleDateString()}` : undefined}>
+      <Panel title="Interpretation" meta={`Generated ${new Date(result.createdAt).toLocaleDateString()}`}>
         <div className="flex flex-wrap items-center gap-3 px-5 py-4">
           <p className="flex-1 text-sm text-muted">AI summaries, capabilities, and access roles. Expand an endpoint to inspect its interpretation.</p>
-          {result ? <button className={button} onClick={() => download(result)}>Download JSON</button> : (
-            <button className={button} disabled={query.isPending || generation.isPending || !query.data?.configured} onClick={() => generation.mutate()}>
-              {generation.isPending ? "Interpreting…" : "Generate interpretation"}
-            </button>
-          )}
+          <button className={button} onClick={() => download(snapshot)}>Download snapshot</button>
         </div>
-        {query.isPending && <p role="status" className="px-5 pb-4 text-sm text-muted">Looking for a saved interpretation…</p>}
-        {generation.isPending && <p role="status" className="px-5 pb-4 text-sm text-muted">Interpreting endpoints, then grouping capabilities. Completed batches are saved as they finish.</p>}
-        {!result && query.data && !query.data.configured && <p className="px-5 pb-4 text-sm text-muted">Set OPENAI_API_KEY in .env.local, then reload to get started.</p>}
-        {error && <p role="alert" className="px-5 pb-4 text-sm text-red-700">{error.message}</p>}
       </Panel>
-      {result?.apps.map((app) => {
+      {result.apps.map((app) => {
         const appModel = model.apps.find((a) => a.id === app.appId)!;
         const appEndpoints = result.endpoints.filter((e) => endpoints.get(e.endpointId)?.appId === app.appId);
         const groups = [...result.capabilities.filter((c) => appEndpoints.some((e) => e.capabilityId === c.id)),

@@ -1,4 +1,4 @@
-import type { Integration } from "../system-model/schema.ts";
+import type { Integration } from "../system-snapshot/system-model.ts";
 import type { Origin } from "./syntax.ts";
 
 type Service = Omit<Integration, "id" | "evidence">;

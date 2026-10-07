@@ -1,4 +1,4 @@
-import type { Integration, SystemModel, Table } from "../schema.ts";
+import type { Integration, SystemModel, Table } from "../system-model.ts";
 import { buildAccessMatrix, filterMatrix, usedColumns, type ColumnFilter, type MatrixGroup } from "./access-matrix.ts";
 
 /**

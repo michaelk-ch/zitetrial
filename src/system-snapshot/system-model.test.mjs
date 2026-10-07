@@ -4,7 +4,7 @@ import {
   deserializeSystemModel,
   serializeSystemModel,
   systemModelSchema,
-} from "./schema.ts";
+} from "./system-model.ts";
 
 // Synthetic contract example, independent of any particular repository.
 function example() {

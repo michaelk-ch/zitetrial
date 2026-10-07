@@ -1,5 +1,5 @@
 import sqlParser from "node-sql-parser";
-import type { TableOperation } from "../system-model/schema.ts";
+import type { TableOperation } from "../system-snapshot/system-model.ts";
 import { DYNAMIC } from "./syntax.ts";
 
 const parser = new sqlParser.Parser();

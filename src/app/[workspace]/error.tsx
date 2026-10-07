@@ -8,7 +8,7 @@ export default function WorkspaceError({ error, retry }: { error: Error & { dige
   const { reset } = useQueryErrorResetBoundary();
   return (
     <EmptyState
-      title="Couldn’t analyze this workspace"
+      title="Couldn’t load this workspace"
       footer={
         <button
           type="button"

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export const defaultCacheDirectory = path.resolve("userdata/.interpretations");
+export const defaultCacheDirectory = path.resolve("userdata/.snapshots");
 export function fingerprint(value: unknown): string {
   const json = JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
     ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);

@@ -23,7 +23,7 @@ export default function ImportDialog() {
       const result = await importWorkspaceAction(formData);
       if ("error" in result) return setError(result.error);
       // A replaced workspace must be re-analyzed rather than served from the session cache.
-      queryClient.removeQueries({ queryKey: ["system-model", result.workspace] });
+      queryClient.removeQueries({ queryKey: ["system-snapshot", result.workspace] });
       dialog.current?.close();
       form.reset();
       router.push(`/${encodeURIComponent(result.workspace)}`);

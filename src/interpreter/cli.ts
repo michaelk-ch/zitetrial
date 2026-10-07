@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { deserializeSystemModel } from "../system-model/schema.ts";
+import { deserializeSystemModel } from "../system-snapshot/system-model.ts";
 import { interpretSystem } from "./index.ts";
 import { endpointBatches, endpointInput, prepareInterpretation } from "./prepare.ts";
 

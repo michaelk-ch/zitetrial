@@ -1,4 +1,4 @@
-import type { App, Endpoint, Integration, Table } from "../schema.ts";
+import type { App, Endpoint, Integration, Table } from "../system-model.ts";
 import type { MatrixGroup, MatrixRow, Operation, Usage } from "./access-matrix.ts";
 import type { Preprocessed } from "./preprocess.ts";
 

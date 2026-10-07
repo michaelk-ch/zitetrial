@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { analyzeRepository } from "./index.ts";
 import { sqlTables } from "./sql.ts";
-import { deserializeSystemModel, serializeSystemModel } from "../system-model/schema.ts";
+import { deserializeSystemModel, serializeSystemModel } from "../system-snapshot/system-model.ts";
 
 async function fixture(t, files) {
   const root = await mkdtemp(path.join(os.tmpdir(), "zite-analyzer-"));

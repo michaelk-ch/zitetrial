@@ -1,9 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { Integration, SystemModel, Table } from "@/system-model/schema";
-import { accessLabel, type ColumnFilter, type Operation, type Usage } from "@/system-model/inference/access-matrix";
-import { defaultAccessOptions, preprocess } from "@/system-model/inference/preprocess";
+import type { Integration, SystemModel, Table } from "@/system-snapshot/system-model";
+import { accessLabel, type ColumnFilter, type Operation, type Usage } from "@/system-snapshot/inference/access-matrix";
+import { defaultAccessOptions, preprocess } from "@/system-snapshot/inference/preprocess";
 import Panel from "../panel";
 import AccessOptionsControls from "./access-options";
 

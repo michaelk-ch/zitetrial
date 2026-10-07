@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { systemModelSchema } from "../schema.ts";
+import { systemModelSchema } from "../system-model.ts";
 import { edgeKind, graphSizes, layoutGraph, packColumn } from "./graph-layout.ts";
 import { preprocess } from "./preprocess.ts";
 
