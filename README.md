@@ -42,10 +42,14 @@ Example checkouts live under `userdata/<workspace>/<sha>`. This directory is exc
 from this project's TypeScript and ESLint checks. See
 [`src/system-model/README.md`](src/system-model/README.md) for the v1 contract.
 
-To add a repository that is not in Git, use **+ Import** in the sidebar and paste the Zite
-repository files API response (`{ "files": [{ "path", "content" }], "headSha" }`). It is written
-to `userdata/<workspace>/<headSha>`, where the workspace is the kebab-cased `project.name` from
-the required root `zite.config.json` (`Baden Dampft` → `baden-dampft`).
+To add a repository, use **+ Import** in the sidebar and either:
+
+- enter an HTTPS Git URL (e.g. `https://github.com/zite/grant-management`); the latest commit of the
+  default branch is shallow-cloned with the server's Git credentials, without `.git`; or
+- paste the Zite repository files API response (`{ "files": [{ "path", "content" }], "headSha" }`).
+
+It is written to `userdata/<workspace>/<commit>`, where the workspace is the kebab-cased
+`project.name` from the required root `zite.config.json` (`Baden Dampft` → `baden-dampft`).
 
 Run `npm run analyze -- userdata/<workspace>/<sha> model.json` to analyze a checkout.
 See [`src/analyzer/README.md`](src/analyzer/README.md) for the API and supported patterns.

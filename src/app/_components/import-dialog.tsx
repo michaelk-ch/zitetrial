@@ -4,6 +4,7 @@ import { useRef, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { importWorkspaceAction } from "./import-action";
+import Tabs from "./tabs";
 
 export default function ImportDialog() {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -47,21 +48,56 @@ export default function ImportDialog() {
           <div>
             <h2 id="import-title" className="text-base font-semibold tracking-[-0.02em]">Import workspace</h2>
             <p className="mt-1 text-xs text-muted">
-              Paste the repository files API response. The workspace is named after <code>project.name</code> in <code>zite.config.json</code> and
-              stored in <code>userdata/&lt;workspace&gt;/&lt;headSha&gt;</code>.
+              The workspace is named after <code>project.name</code> in the root <code>zite.config.json</code> and stored in{" "}
+              <code>userdata/&lt;workspace&gt;/&lt;commit&gt;</code>.
             </p>
           </div>
-          <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
-            Response JSON
-            <textarea
-              name="json"
-              required
-              rows={12}
-              spellCheck={false}
-              placeholder={'{ "files": [{ "path": "…", "content": "…" }], "headSha": "…" }'}
-              className="w-full resize-y rounded-lg border border-line-strong bg-white px-2.5 py-2 font-mono text-xs"
+          <div>
+            <Tabs
+              label="Import source"
+              tabs={[
+                {
+                  id: "git",
+                  label: "Git repository",
+                  content: (
+                    <div className="flex flex-col gap-1.5">
+                      <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
+                        <input type="hidden" name="mode" value="git" />
+                        Repository URL
+                        <input
+                          type="url"
+                          name="url"
+                          required
+                          spellCheck={false}
+                          placeholder="https://github.com/zite/grant-management"
+                          className="w-full rounded-lg border border-line-strong bg-white px-2.5 py-2 font-mono text-xs text-ink"
+                        />
+                      </label>
+                      <p className="text-xs text-muted">The latest commit of the default branch is cloned over HTTPS.</p>
+                    </div>
+                  ),
+                },
+                {
+                  id: "json",
+                  label: "Paste response",
+                  content: (
+                    <label className="flex flex-col gap-1.5 text-xs font-medium text-muted">
+                      <input type="hidden" name="mode" value="json" />
+                      Repository files API response
+                      <textarea
+                        name="json"
+                        required
+                        rows={12}
+                        spellCheck={false}
+                        placeholder={'{ "files": [{ "path": "…", "content": "…" }], "headSha": "…" }'}
+                        className="w-full resize-y rounded-lg border border-line-strong bg-white px-2.5 py-2 font-mono text-xs text-ink"
+                      />
+                    </label>
+                  ),
+                },
+              ]}
             />
-          </label>
+          </div>
           <label className="flex items-center gap-2 text-[13px]">
             <input type="checkbox" name="replace" /> Replace the workspace if it already exists
           </label>
