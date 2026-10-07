@@ -517,6 +517,217 @@ test("follows only selected methods in imported phase arrays, including spreads 
   }
 });
 
+function reachableCalls(model, endpointName) {
+  const endpoint = model.endpoints.find((endpoint) => endpoint.id === endpointName || endpoint.name === endpointName);
+  const nodes = new Map(model.callGraph.nodes.map((node) => [node.id, node]));
+  const pending = model.callGraph.entries.filter((entry) => entry.endpointId === endpoint.id).map((entry) => entry.nodeId);
+  const reached = new Map();
+  while (pending.length) {
+    const id = pending.pop();
+    if (reached.has(id)) continue;
+    const node = nodes.get(id);
+    assert.ok(node, `Missing call node ${id}`);
+    reached.set(id, node);
+    pending.push(...node.calls.map((call) => call.nodeId));
+  }
+  return [...reached.values()];
+}
+
+function assertProvenance(model) {
+  for (const endpoint of model.endpoints) {
+    const facts = reachableCalls(model, endpoint.id).flatMap((node) => node.accesses);
+    const relationships = model.relationships.filter((r) => r.endpointId === endpoint.id);
+    for (const relation of relationships) {
+      const matches = facts.filter((fact) => fact.kind === relation.kind &&
+        (relation.kind === "table-access" ? fact.tableId === relation.tableId : fact.integrationId === relation.integrationId));
+      assert.ok(matches.length, `No provenance for ${endpoint.name}: ${JSON.stringify(relation)}`);
+      assert.deepEqual([...new Set(matches.flatMap((fact) => fact.evidence))].sort(), relation.evidence);
+      if (relation.kind === "table-access") {
+        const operations = new Set(matches.map((fact) => fact.operation));
+        if (operations.size > 1) operations.delete("unknown");
+        assert.deepEqual([...operations].sort(), relation.operations);
+      }
+    }
+    for (const fact of facts) assert.ok(relationships.some((r) => r.kind === fact.kind &&
+      (fact.kind === "table-access" ? r.tableId === fact.tableId : r.integrationId === fact.integrationId)));
+  }
+}
+
+test("specializes literal arguments across wrappers, object properties, branches, SQL, and SDK calls", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/data.ts": `
+      import { zite } from 'zitejs/db';
+      export function query(table, max) { return zite.sql({query: 'SELECT * FROM "' + table + '" LIMIT ' + max}); }
+      function dispatch(options) {
+        const { kind } = options;
+        switch (kind) {
+          case 'customer': return zite.customers.create({});
+          case 'order': zite.orderItems.create({}); break;
+          default: return zite.unused.delete({});
+        }
+        zite.orderItems.update({});
+      }
+      export function wrapper(kind, options) {
+        dispatch({ ...options, kind });
+        if (options.audit) zite.unused.create({});
+        options.audit && zite.unused.update({});
+        options.audit ? zite.unused.findAll({}) : zite.customers.findAll({});
+        query(kind === 'customer' ? 'Customers' : 'OrderItems', 100_000);
+      }
+      export function sdk(table) { zite[table].delete({}); }
+    `,
+    ...Object.fromEntries(['customer', 'order'].map((kind) => [`apps/staff/src/api/${kind}.ts`, `
+      import { createEndpoint } from 'zitejs/backend';
+      import { wrapper, sdk } from '@project/shared/data';
+      export default createEndpoint({ execute: ({ input }) => {
+        wrapper('${kind}', { audit: false, id: input.id });
+        sdk('${kind === 'customer' ? 'customers' : 'orderItems'}');
+      }});
+    `])),
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.diagnostics, []);
+  const accesses = (name) => model.relationships.filter((r) => r.endpointId.endsWith('/' + name)).map((r) => [r.tableId, r.operations]);
+  assert.deepEqual(accesses('customer'), [['table:customers', ['create', 'delete', 'read']]]);
+  assert.deepEqual(accesses('order'), [['table:customers', ['read']], ['table:orderItems', ['create', 'delete', 'read', 'update']]]);
+  const customer = reachableCalls(model, 'customer');
+  assert.deepEqual(customer.find((n) => n.name === 'wrapper').arguments, { kind: 'customer', 'options.audit': false });
+  assert.deepEqual(customer.find((n) => n.name === 'dispatch').arguments, { 'options.audit': false, 'options.kind': 'customer' });
+  assert.deepEqual(customer.find((n) => n.name === 'query').arguments, { table: 'Customers', max: 100000 });
+  assertProvenance(model);
+  assert.deepEqual(await analyzeRepository(root), model);
+});
+
+test("retains both routes to shared accesses, callback captures, and recursive calls", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/routes.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      import { Email } from 'zitejs/email';
+      function shared() { zite.customers.findAll({}); }
+      function left() { shared(); }
+      function right() { shared(); }
+      function retry(action) { return action(); }
+      function ignored(action) { if (false) action(); }
+      function recurse(input) { if (input.again) recurse(input); zite.orderItems.findAll({}); }
+      function pure(n) { if (n > 50) return n; return pure(n + 1); }
+      function send(kind) {
+        retry(() => { if (kind === 'customer') zite.customers.create({}); else zite.unused.delete({}); });
+        Promise.resolve().then(() => { if (kind === 'customer') Email.send({}); });
+      }
+      export default createEndpoint({ execute: ({ input }) => {
+        left(); right(); send('customer'); recurse(input); pure(0);
+        ignored(() => zite.unused.create({}));
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.diagnostics, []);
+  assert.ok(!model.relationships.some((r) => r.tableId === 'table:unused'));
+  const nodes = reachableCalls(model, 'routes');
+  const named = (name) => nodes.find((node) => node.name === name);
+  assert.equal(named('pure'), undefined);
+  const shared = named('shared');
+  for (const name of ['left', 'right']) assert.ok(named(name).calls.some((call) => call.nodeId === shared.id));
+  assert.ok(named('recurse').calls.some((call) => call.nodeId === named('recurse').id));
+  const callback = nodes.find((n) => n.accesses.some((a) => a.operation === 'create'));
+  assert.equal(callback.arguments['$capture.send.kind'], 'customer');
+  assert.ok(named('retry').calls.some((call) => call.nodeId === callback.id));
+  assert.ok(named('send').calls.some((call) => call.kind === 'callback'));
+  assertProvenance(model);
+});
+
+test("keeps unknown branches and callback inputs, but honors omitted defaults and known early returns", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/data.ts": `
+      import { zite } from 'zitejs/db';
+      export function select(kind = 'customer') {
+        switch (kind) { case 'customer': return zite.customers.create({}); }
+        return zite.orderItems.create({});
+      }
+      export function guard(kind) {
+        if (kind === 'customer') return zite.customers.findAll({});
+        return zite.orderItems.findAll({});
+      }
+      export function mutation(options, input) {
+        options.kind = input.kind;
+        if (options.kind === 'customer') zite.customers.update({}); else zite.orderItems.update({});
+      }
+      export function destructured({ kind } = { kind: 'customer' }) { guard(kind); }
+      export function spread(options) { guard({ kind: 'customer', ...options }.kind); }
+      export function local(input) {
+        const options = { kind: 'customer' };
+        options.kind = input.kind;
+        if (options.kind === 'customer') zite.customers.delete({}); else zite.orderItems.delete({});
+      }
+    `,
+    "apps/staff/src/api/known.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { select, guard, spread } from '@project/shared/data';
+      export default createEndpoint({ execute: () => { select(); guard('customer'); spread({}); } });
+    `,
+    "apps/staff/src/api/unknown.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      import { select, guard, mutation, destructured, local, spread } from '@project/shared/data';
+      export default createEndpoint({ execute: ({ input }) => {
+        select(input.kind);
+        guard(input.kind as 'customer');
+        mutation({ kind: 'customer' }, input);
+        destructured(input);
+        local(input);
+        spread({ ...input });
+        spread({ kind: input.kind });
+        Promise.resolve(input.kind).then(select);
+        const options = { kind: 'customer', ...input };
+        guard(options.kind);
+        switch (options) { case options: zite.unused.delete({}); }
+        if (input.enabled) zite.unused.findAll({});
+        input.enabled && zite.unused.create({});
+        input.enabled || zite.unused.update({});
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  const known = model.relationships.filter((r) => r.endpointId.endsWith('/known'));
+  assert.deepEqual(known.map((r) => [r.tableId, r.operations]), [['table:customers', ['create', 'read']]]);
+  const unknown = model.relationships.filter((r) => r.endpointId.endsWith('/unknown'));
+  assert.deepEqual(unknown.map((r) => [r.tableId, r.operations]), [
+    ['table:customers', ['create', 'delete', 'read', 'update']], ['table:orderItems', ['create', 'delete', 'read', 'update']],
+    ['table:unused', ['create', 'delete', 'read', 'update']],
+  ]);
+  assert.ok(reachableCalls(model, 'unknown').filter((n) => n.name === 'select').every((n) => !('kind' in n.arguments)));
+  const destructured = reachableCalls(model, 'unknown').find((n) => n.name === 'destructured');
+  const guard = model.callGraph.nodes.find((n) => n.id === destructured.calls[0].nodeId);
+  assert.deepEqual(guard.arguments, {});
+  for (const spread of reachableCalls(model, 'unknown').filter((n) => n.name === 'spread')) {
+    assert.equal(spread.calls[0].nodeId, guard.id);
+  }
+  assertProvenance(model);
+});
+
+test("bounds expanding recursive contexts by widening literals, preserving possible effects", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/recursive.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      function recurse(n) {
+        if (n === 50) return zite.orderItems.create({});
+        zite.customers.findAll({});
+        recurse(n + 1);
+      }
+      export default createEndpoint({ execute: () => recurse(0) });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.ok(model.callGraph.nodes.length <= 35);
+  assert.deepEqual(model.diagnostics.map((d) => d.code), ['analysis-context-limit']);
+  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+    ['table:customers', ['read']], ['table:orderItems', ['create']],
+  ]);
+  assertProvenance(model);
+});
+
 // Local checkouts are intentionally not checked into Git. Exercise them when present.
 for (const [name, tables, endpoints, providers, apps = 2] of [
   ["crm", 33, 128, ["anthropic", "zite_email"]],
@@ -555,12 +766,18 @@ for (const [name, tables, endpoints, providers, apps = 2] of [
       ]);
     }
     assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
+    assertProvenance(model);
     assert.ok([...model.apps, ...model.tables].every((entity) => !("evidence" in entity)));
     assert.ok(model.relationships.every((relationship) => !("id" in relationship)));
     const bootstrap = model.endpoints.filter((e) => e.name === "bootstrap");
     assert.ok(!model.relationships.some((r) => r.kind === "integration-use" && bootstrap.some((e) => e.id === r.endpointId)));
 
     if (name === "crm") {
+      const calls = reachableCalls(model, 'endpoint:apps/crm/src/api/createCompany');
+      const context = calls.find((node) => node.name === 'loadContext' && node.arguments['payload.trigger'] === 'company.created');
+      assert.equal(context.arguments['payload.entityType'], 'company');
+      const targets = context.calls.map((call) => calls.find((node) => node.id === call.nodeId).name);
+      assert.deepEqual(targets, ['loadCompanyContext']);
       const access = (endpoint, table) => model.relationships.find((r) =>
         r.endpointId === `endpoint:apps/crm/src/api/${endpoint}` && r.tableId === `table:${table}`);
       for (const table of ["companies", "contacts", "deals", "leads"]) {

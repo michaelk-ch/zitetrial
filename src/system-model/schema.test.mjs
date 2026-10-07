@@ -18,6 +18,19 @@ function example() {
     ],
     integrations: [{ id: "email", name: "Email", category: "email" }],
     endpoints: [{ id: "send-receipt", name: "Send receipt", appId: "staff" }],
+    callGraph: {
+      entries: [{ endpointId: 'send-receipt', nodeId: 'entry' }],
+      nodes: [
+        { id: 'entry', name: 'execute', evidence: ['api/send.ts:1'], arguments: {},
+          calls: [{ nodeId: 'helper', kind: 'call', evidence: ['api/send.ts:4'] }], accesses: [] },
+        { id: 'helper', name: 'send', evidence: ['shared/email.ts:2'],
+          arguments: { kind: 'receipt', 'options.retry': false, max: 3, actor: null }, calls: [],
+          accesses: [
+            { kind: 'table-access', tableId: 'payments', operation: 'read', evidence: ['shared/email.ts:3'] },
+            { kind: 'integration-use', integrationId: 'email', evidence: ['shared/email.ts:4'] },
+          ] },
+      ],
+    },
     relationships: [
       {
         kind: "table-access",
@@ -53,6 +66,7 @@ test("accepts partial findings, unknown classifications, and diagnostics", () =>
   assert.equal(systemModelSchema.safeParse({
     schemaVersion: 1, repository: { name: "empty" },
     apps: [], tables: [], integrations: [], endpoints: [], relationships: [],
+    callGraph: { entries: [], nodes: [] },
   }).success, true);
 });
 
@@ -112,6 +126,7 @@ test("rejects fields, app-level access, and configured integration relationships
 test("accepts schema-only and self references without endpoints or field details", () => {
   const input = example();
   input.endpoints = [];
+  input.callGraph = { entries: [], nodes: [] };
   input.relationships = [{ kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }];
   const model = systemModelSchema.parse(input);
   assert.deepEqual(model.relationships[0].evidence, []);
@@ -138,5 +153,25 @@ test("treats evidence as opaque debugging strings", () => {
     const input = example();
     input.relationships[0].evidence = [value];
     assert.equal(systemModelSchema.safeParse(input).success, false);
+  }
+});
+
+test("requires call provenance and validates its references", () => {
+  const input = example();
+  const missingGraph = example();
+  delete missingGraph.callGraph;
+  assert.equal(systemModelSchema.safeParse(missingGraph).success, false);
+  for (const mutate of [
+    (g) => { g.entries[0].endpointId = 'missing'; },
+    (g) => { g.entries[0].nodeId = 'missing'; },
+    (g) => { g.nodes[0].calls[0].nodeId = 'missing'; },
+    (g) => { g.nodes[1].accesses[0].tableId = 'missing'; },
+    (g) => { g.nodes[1].accesses[1].integrationId = 'missing'; },
+    (g) => { g.nodes.push(g.nodes[0]); },
+    (g) => { g.nodes[1].arguments.kind = { nested: 'value' }; },
+  ]) {
+    const invalid = structuredClone(input);
+    mutate(invalid.callGraph);
+    assert.equal(systemModelSchema.safeParse(invalid).success, false);
   }
 });

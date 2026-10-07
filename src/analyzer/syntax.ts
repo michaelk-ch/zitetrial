@@ -1,12 +1,32 @@
 import { Node, SyntaxKind } from "ts-morph";
 
-export type Bindings = Map<Node, Node[]>;
+const unknownKeys = Symbol("unknown object keys");
+type ConstantObject = { [key: string]: Constant | undefined; [unknownKeys]?: boolean };
+export type Constant = string | number | boolean | null | ConstantObject;
+export type Bindings = Map<Node, Node[]> & { constants?: Map<Node, Constant> };
+
+/** Context identity must distinguish missing properties from unknown overrides. */
+export function constantKey(value: Constant): string {
+  return JSON.stringify(value, (_key, item) => item === undefined ? ["unknown"] :
+    item && typeof item === "object" && !Array.isArray(item)
+      ? [Boolean(item[unknownKeys]), ...Object.entries(item).sort(([a], [b]) => a.localeCompare(b))] : item);
+}
 
 export function bindArguments(fn: Node, args: Node[], bindings: Bindings): Bindings {
-  const bound = new Map(bindings);
+  const bound: Bindings = new Map(bindings);
+  bound.constants = new Map(bindings.constants);
   if (Node.isFunctionLikeDeclaration(fn)) fn.getParameters().forEach((parameter, index) => {
+    bound.delete(parameter);
+    bound.constants!.delete(parameter);
+    const spread = args.findIndex(Node.isSpreadElement);
+    if (spread >= 0 && index >= spread) return;
     const argument = args[index] ?? parameter.getInitializer();
-    if (argument) bound.set(parameter, values(argument, new Set(), bindings));
+    const source = args[index] ? bindings : bound;
+    if (argument) {
+      bound.set(parameter, values(argument, new Set(), source));
+      const value = constant(argument, source);
+      if (value !== undefined) bound.constants!.set(parameter, value);
+    }
   });
   return bound;
 }
@@ -23,6 +43,31 @@ export function unwrap(node: Node): Node {
 export function declarations(node: Node): Node[] {
   const symbol = node.getSymbol();
   return (symbol?.getAliasedSymbol() ?? symbol)?.getDeclarations() ?? [];
+}
+
+const assignments = new WeakMap<Node, Set<Node>>();
+/** Direct writes invalidate literal assumptions, including writes to object fields. */
+export function isAssigned(declaration: Node): boolean {
+  const file = declaration.getSourceFile();
+  let written = assignments.get(file);
+  if (!written) {
+    written = new Set();
+    file.forEachDescendant((node) => {
+      let target: Node | undefined;
+      if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment &&
+        node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) target = node.getLeft();
+      if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) &&
+        [SyntaxKind.PlusPlusToken, SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) target = node.getOperand();
+      if (Node.isDeleteExpression(node)) target = node.getExpression();
+      while (target && (Node.isPropertyAccessExpression(target) || Node.isElementAccessExpression(target))) target = target.getExpression();
+      if (target) declarations(target).forEach((target) => {
+        written!.add(target);
+        if (Node.isBindingElement(target)) written!.add(target.getParent().getParent());
+      });
+    });
+    assignments.set(file, written);
+  }
+  return written.has(declaration);
 }
 
 export function initializer(node: Node): Node | undefined {
@@ -72,7 +117,11 @@ export function values(node: Node, seen = new Set<Node>(), bindings: Bindings = 
   if (seen.has(node)) return [node];
   seen.add(node);
   const follow = (value: Node) => values(value, new Set(seen), bindings);
-  if (Node.isConditionalExpression(node)) return [...follow(node.getWhenTrue()), ...follow(node.getWhenFalse())];
+  if (Node.isConditionalExpression(node)) {
+    const condition = constant(node.getCondition(), bindings);
+    return condition === undefined ? [...follow(node.getWhenTrue()), ...follow(node.getWhenFalse())]
+      : follow(condition ? node.getWhenTrue() : node.getWhenFalse());
+  }
   if (Node.isBinaryExpression(node) && [SyntaxKind.QuestionQuestionToken, SyntaxKind.BarBarToken].includes(node.getOperatorToken().getKind())) {
     return [...follow(node.getLeft()), ...follow(node.getRight())];
   }
@@ -114,11 +163,13 @@ export function values(node: Node, seen = new Set<Node>(), bindings: Bindings = 
     const found = declarations(node).flatMap((declaration) => {
       const bound = bindings.get(declaration);
       if (bound) return bound.flatMap(follow);
+      if (Node.isParameterDeclaration(declaration)) return [];
       if (Node.isBindingElement(declaration)) {
         const pattern = declaration.getParent();
         const owner = pattern.getParent();
         if (!owner) return [];
-        const sources = bindings.get(owner) ?? (initializer(owner) ? follow(initializer(owner)!) : iterationValues(owner));
+        const sources = bindings.get(owner) ?? (Node.isParameterDeclaration(owner) ? [] :
+          initializer(owner) ? follow(initializer(owner)!) : iterationValues(owner));
         return sources.flatMap((source) => {
           if (Node.isArrayBindingPattern(pattern) && Node.isArrayLiteralExpression(source)) {
             const item = arrayElements(source, new Set(seen), bindings)[pattern.getElements().indexOf(declaration)];
@@ -160,6 +211,8 @@ export function arrayElements(node: Node, seen = new Set<Node>(), bindings: Bind
 export function stringValues(node: Node | undefined, seen = new Set<Node>(), bindings: Bindings = new Map()): (string | undefined)[] {
   if (!node) return [undefined];
   node = unwrap(node); // Ignore casts applied only at the access site.
+  const known = constant(node, bindings);
+  if (typeof known === "string" || typeof known === "number") return [String(known)];
   const type = node.getType();
   const types = type.isUnion() ? type.getUnionTypes() : [type];
   if (types.every((type) => type.isStringLiteral())) return types.map((type) => String(type.getLiteralValue()));
@@ -193,13 +246,13 @@ export function returns(fn: Node): Node[] {
 /** Trace an expression to its SDK import, including aliases and client factories. */
 export type Origin = { module: string; members: string[]; instance: boolean };
 
-export function origins(node: Node, seen = new Set<Node>()): Origin[] {
+export function origins(node: Node, seen = new Set<Node>(), bindings: Bindings = new Map()): Origin[] {
   node = unwrap(node);
   if (seen.has(node)) return [];
   seen.add(node);
-  const follow = (value: Node) => origins(value, new Set(seen));
+  const follow = (value: Node) => origins(value, new Set(seen), bindings);
   if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
-    const keys = Node.isPropertyAccessExpression(node) ? [node.getName()] : stringValues(node.getArgumentExpression());
+    const keys = Node.isPropertyAccessExpression(node) ? [node.getName()] : stringValues(node.getArgumentExpression(), new Set(), bindings);
     return follow(node.getExpression()).flatMap((base) => keys.map((key) =>
       ({ ...base, members: [...base.members, key ?? "<dynamic>"] })));
   }
@@ -207,10 +260,15 @@ export function origins(node: Node, seen = new Set<Node>()): Origin[] {
     return follow(node.getExpression()).map((base) => ({ ...base, instance: true }));
   }
   if (Node.isCallExpression(node)) {
-    return callables(node.getExpression()).flatMap((fn) => returns(fn).flatMap(follow));
+    return callables(node.getExpression(), bindings).flatMap((fn) => {
+      const bound = bindArguments(fn, node.getArguments(), bindings);
+      return returns(fn).flatMap((value) => origins(value, new Set(seen), bound));
+    });
   }
   if (Node.isConditionalExpression(node)) {
-    return [...follow(node.getWhenTrue()), ...follow(node.getWhenFalse())];
+    const condition = constant(node.getCondition(), bindings);
+    return condition === undefined ? [...follow(node.getWhenTrue()), ...follow(node.getWhenFalse())]
+      : follow(condition ? node.getWhenTrue() : node.getWhenFalse());
   }
   if (!Node.isIdentifier(node)) return [];
   for (const declaration of node.getSymbol()?.getDeclarations() ?? []) {
@@ -223,6 +281,9 @@ export function origins(node: Node, seen = new Set<Node>()): Origin[] {
     return [{ module: specifier, members: [name], instance: false }];
   }
   return declarations(node).flatMap((declaration) => {
+    const bound = bindings.get(declaration);
+    if (bound) return bound.flatMap(follow);
+    if (Node.isParameterDeclaration(declaration)) return [];
     const value = initializer(declaration);
     return value ? follow(value) : [];
   });
@@ -240,3 +301,105 @@ export function literal(node: Node | undefined): string | undefined {
 }
 
 export const DYNAMIC = "__zite_dynamic__";
+
+/** Only source literals, immutable aliases, and explicit bindings; never type assertions. */
+export function constant(node: Node | undefined, bindings: Bindings = new Map(), seen = new Set<Node>()): Constant | undefined {
+  if (!node) return;
+  node = unwrap(node);
+  if (seen.has(node)) return;
+  seen.add(node);
+  const read = (value: Node | undefined) => constant(value, bindings, new Set(seen));
+  if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralText();
+  if (Node.isNumericLiteral(node)) return node.getLiteralValue();
+  if (node.getKind() === SyntaxKind.TrueKeyword) return true;
+  if (node.getKind() === SyntaxKind.FalseKeyword) return false;
+  if (node.getKind() === SyntaxKind.NullKeyword) return null;
+  if (Node.isObjectLiteralExpression(node)) {
+    const result: ConstantObject = Object.create(null);
+    for (const member of node.getProperties()) {
+      if (Node.isSpreadAssignment(member)) {
+        const value = read(member.getExpression());
+        // An unknown later spread may overwrite any earlier property.
+        if (!value || typeof value !== "object" || value[unknownKeys]) {
+          for (const key of Object.keys(result)) result[key] = undefined;
+          result[unknownKeys] = true;
+        }
+        if (value && typeof value === "object") Object.assign(result, value);
+      } else if (Node.isPropertyAssignment(member) || Node.isShorthandPropertyAssignment(member)) {
+        const key = member.getNameNode();
+        const name = Node.isComputedPropertyName(key) ? read(key.getExpression()) :
+          Node.isStringLiteral(key) ? key.getLiteralText() : member.getName();
+        if (typeof name === "string" || typeof name === "number") result[name] = read(initializer(member));
+        else {
+          for (const key of Object.keys(result)) result[key] = undefined;
+          result[unknownKeys] = true;
+        }
+      }
+    }
+    return result;
+  }
+  if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
+    const base = read(node.getExpression());
+    const key = Node.isPropertyAccessExpression(node) ? node.getName() : read(node.getArgumentExpression());
+    if (base && typeof base === "object" && (typeof key === "string" || typeof key === "number")) return base[key];
+    return;
+  }
+  if (Node.isIdentifier(node)) {
+    for (const declaration of declarations(node)) {
+      if (isAssigned(declaration)) continue;
+      if (bindings.constants?.has(declaration)) return bindings.constants.get(declaration);
+      if (Node.isBindingElement(declaration)) {
+        const owner = declaration.getParent().getParent();
+        const base = owner && !isAssigned(owner) && (bindings.constants?.get(owner) ??
+          (Node.isParameterDeclaration(owner) ? undefined : read(initializer(owner))));
+        const key = declaration.getPropertyNameNode()?.getText() ?? declaration.getName();
+        if (base && typeof base === "object") return base[key];
+      }
+      // An unbound parameter's default does not constrain all its callers.
+      if (!Node.isParameterDeclaration(declaration)) {
+        const value = read(initializer(declaration));
+        if (value !== undefined) return value;
+      }
+    }
+    return;
+  }
+  if (Node.isPrefixUnaryExpression(node)) {
+    const value = read(node.getOperand());
+    if (value === undefined) return;
+    if (node.getOperatorToken() === SyntaxKind.ExclamationToken) return !value;
+    if (typeof value === "number" && node.getOperatorToken() === SyntaxKind.MinusToken) return -value;
+  }
+  if (Node.isConditionalExpression(node)) {
+    const condition = read(node.getCondition());
+    if (condition !== undefined) return read(condition ? node.getWhenTrue() : node.getWhenFalse());
+  }
+  if (Node.isBinaryExpression(node)) {
+    const left = read(node.getLeft());
+    const right = read(node.getRight());
+    const op = node.getOperatorToken().getKind();
+    if (op === SyntaxKind.AmpersandAmpersandToken) return left === undefined ? undefined : left ? right : left;
+    if (op === SyntaxKind.BarBarToken) return left === undefined ? undefined : left || right;
+    if (op === SyntaxKind.QuestionQuestionToken) return left === undefined ? undefined : left ?? right;
+    if (left === undefined || right === undefined || typeof left === "object" && left !== null || typeof right === "object" && right !== null) return;
+    if (op === SyntaxKind.EqualsEqualsEqualsToken) return left === right;
+    if (op === SyntaxKind.ExclamationEqualsEqualsToken) return left !== right;
+    if (op === SyntaxKind.PlusToken && (typeof left === "string" || typeof right === "string")) return String(left) + String(right);
+    if (typeof left === "number" && typeof right === "number") {
+      if (op === SyntaxKind.PlusToken) return left + right;
+      if (op === SyntaxKind.MinusToken) return left - right;
+      if (op === SyntaxKind.LessThanToken) return left < right;
+      if (op === SyntaxKind.LessThanEqualsToken) return left <= right;
+      if (op === SyntaxKind.GreaterThanToken) return left > right;
+      if (op === SyntaxKind.GreaterThanEqualsToken) return left >= right;
+    }
+  }
+  if (Node.isTemplateExpression(node)) {
+    let result = node.getHead().getLiteralText();
+    for (const span of node.getTemplateSpans()) {
+      const value = read(span.getExpression());
+      if (value === undefined || typeof value === "object" && value !== null) return;
+      result += String(value) + span.getLiteral().getLiteralText();
+    }
+    return result;
+  }
+}

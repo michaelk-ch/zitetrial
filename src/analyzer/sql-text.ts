@@ -1,5 +1,5 @@
 import { Node, SyntaxKind } from "ts-morph";
-import { arrayElements, bindArguments, bodyOf, callables, declarations, DYNAMIC, literal, returns, stringValues, unwrap, values } from "./syntax.ts";
+import { arrayElements, bindArguments, bodyOf, callables, constant, declarations, DYNAMIC, literal, returns, stringValues, unwrap, values } from "./syntax.ts";
 import type { Bindings } from "./syntax.ts";
 
 // Bound combinations of independent choices. A sentinel keeps truncation visible.
@@ -63,6 +63,8 @@ export function sqlTexts(node: Node | undefined, seen = new Set<Node>(), binding
   if (seen.has(node)) return unknown();
   seen.add(node);
   const follow = (value: Node) => sqlTexts(value, new Set(seen), bindings, unresolved);
+  const known = constant(node, bindings);
+  if (known !== undefined && (known === null || typeof known !== "object")) return [String(known)];
   // Scalars and narrowed literal unions can come from type metadata (e.g. an
   // input schema), whose property initializers aren't runtime SQL expressions.
   const type = node.getType();

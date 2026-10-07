@@ -16,6 +16,9 @@ The model describes a single repository snapshot and its shared database:
 - **Relationships** describe endpoint table access (read/join/create/update/delete/unknown) and
   endpoint integration calls, plus table-to-table references declared in the schema.
 - **Diagnostics** report unsupported patterns, unresolved SQL, or other gaps.
+- **Call graph** records endpoint entry points, function contexts, known literal
+  arguments, calls, and local accesses. `callGraph` is required, with explicit
+  `entries` and `nodes` arrays even when empty.
 
 App-to-endpoint ownership is stored once in `endpoint.appId`. Table access and
 integration calls always originate from an endpoint, identified by `endpointId`.

@@ -74,6 +74,29 @@ export const diagnosticSchema = z.strictObject({
   evidence: evidenceSchema,
 });
 
+const accessFactSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("table-access"), tableId: idSchema, operation: tableOperationSchema, evidence: evidenceSchema }),
+  z.strictObject({ kind: z.literal("integration-use"), integrationId: idSchema, evidence: evidenceSchema }),
+]);
+
+/** Nodes are function contexts, specialized by known arguments, not runtime calls. */
+export const callGraphSchema = z.strictObject({
+  entries: z.array(z.strictObject({ endpointId: idSchema, nodeId: idSchema })),
+  nodes: z.array(z.strictObject({
+    id: idSchema,
+    name: nameSchema,
+    evidence: evidenceSchema,
+    // Flattened parameter/property paths; omitted values are unknown, not absent.
+    arguments: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])),
+    calls: z.array(z.strictObject({
+      nodeId: idSchema,
+      kind: z.enum(["call", "callback"]),
+      evidence: evidenceSchema,
+    })),
+    accesses: z.array(accessFactSchema),
+  })),
+});
+
 /** One repository snapshot, with one shared database and zero or more apps. */
 export const systemModelSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -88,6 +111,7 @@ export const systemModelSchema = z.strictObject({
   endpoints: z.array(endpointSchema),
   relationships: z.array(relationshipSchema),
   diagnostics: z.array(diagnosticSchema).default([]),
+  callGraph: callGraphSchema,
 }).superRefine((model, ctx) => {
   const issue = (path: (string | number)[], message: string) =>
     ctx.addIssue({ code: "custom", path, message });
@@ -128,6 +152,23 @@ export const systemModelSchema = z.strictObject({
       requireId(integrations, relationship.integrationId, [...path, "integrationId"]);
     }
   });
+  const nodes = new Set<string>();
+  model.callGraph.nodes.forEach((node, index) => {
+    if (nodes.has(node.id)) issue(["callGraph", "nodes", index, "id"], `Duplicate ID: ${node.id}`);
+    nodes.add(node.id);
+  });
+  model.callGraph.entries.forEach((entry, index) => {
+    requireId(endpoints, entry.endpointId, ["callGraph", "entries", index, "endpointId"]);
+    requireId(nodes, entry.nodeId, ["callGraph", "entries", index, "nodeId"]);
+  });
+  model.callGraph.nodes.forEach((node, index) => {
+    node.calls.forEach((call, i) => requireId(nodes, call.nodeId, ["callGraph", "nodes", index, "calls", i, "nodeId"]));
+    node.accesses.forEach((access, i) => {
+      const path = ["callGraph", "nodes", index, "accesses", i];
+      if (access.kind === "table-access") requireId(tables, access.tableId, [...path, "tableId"]);
+      else requireId(integrations, access.integrationId, [...path, "integrationId"]);
+    });
+  });
 });
 
 export type App = z.infer<typeof appSchema>;
@@ -137,6 +178,7 @@ export type Endpoint = z.infer<typeof endpointSchema>;
 export type Relationship = z.infer<typeof relationshipSchema>;
 export type Diagnostic = z.infer<typeof diagnosticSchema>;
 export type SystemModel = z.infer<typeof systemModelSchema>;
+export type CallGraph = z.infer<typeof callGraphSchema>;
 
 /** Validate at both JSON boundaries. Throws on invalid JSON or invalid model data. */
 export function deserializeSystemModel(json: string): SystemModel {

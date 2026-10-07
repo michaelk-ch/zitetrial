@@ -55,8 +55,8 @@ does not emit a model or accept an output filename.
 - Treat files under `apps/*/src/api` as endpoints. Read `createEndpoint`'s
   description and start from its `execute` function.
 - Follow named calls, aliases, re-exports, client factories, and callbacks through
-  relative imports, `@/*`, and `@project/*`. Cache findings per function and
-  handle recursive calls. Uncalled functions in an imported module contribute no
+  relative imports, `@/*`, and `@project/*`. Cache findings per function and its
+  literal/callback context, including recursive calls. Uncalled functions contribute no
   findings. Resolve called methods in static object/array registries, including
   array spreads, computed indexes, tuple destructuring, `for...of` loops, and
   registries returned by argument-free functions.
@@ -94,18 +94,84 @@ does not emit a model or accept an output filename.
   including findings in shared helpers. Apps and tables have no evidence.
   Entity IDs and collection ordering are deterministic.
 
+## Call provenance and literal arguments
+
+The analyzer emits a required `callGraph` alongside the aggregated relationships.
+The graph contains:
+
+- `entries`: endpoint IDs paired with their execute node IDs.
+- `nodes`: function contexts with a name, definition evidence, known `arguments`,
+  outgoing `calls`, and local `accesses` to tables or integrations.
+- Each call records its target node ID and call-site evidence. `kind: "call"`
+  means a resolved source call (including an explicitly invoked callback).
+  `kind: "callback"` means a callback passed to external/unresolved code, which
+  may invoke it with unknown arguments.
+- Each local access records its target, operation for tables, and access-site
+  evidence. Operations remain separate here even when an endpoint relationship
+  merges them. Relationship evidence and graph evidence remain opaque strings.
+
+Follow calls from an endpoint's entry to recover its access paths. The graph
+preserves multiple routes to the same helper and recursive cycles; use a visited
+set when traversing it. Pure helpers with no access or diagnostic descendants are
+omitted. Function contexts are shared within each app and get separate nodes when
+known arguments or callback targets differ. Node IDs are deterministic for a
+snapshot, not stable identifiers across source edits.
+
+`arguments` contains only known scalar leaves, using parameter/property paths:
+
+```json
+{
+  "trigger": "company.created",
+  "payload.entityType": "company"
+}
+```
+
+Missing paths mean unknown, not absent. Closure captures use paths such as
+`$capture.send.kind`. Strings, numbers, booleans, null, partial object literals,
+spreads, immutable aliases, and simple literal expressions propagate through
+source-owned calls. Omitted arguments can use literal parameter defaults; endpoint
+inputs and external callback inputs remain unknown. These facts also refine SDK
+table names and SQL text, and prune known `if`, `switch`, ternary, and short-circuit
+branches. Unknown conditions retain their possible branches. Direct assignments
+invalidate literal assumptions; type assertions never establish a literal fact.
+
+For CRM `createCompany`, the graph distinguishes paths such as:
+
+```text
+execute → withRetry → <callback> → Companies.create
+execute → getActor → getSettings → Settings.read/create
+execute → runTrigger(trigger="company.created", payload.entityType="company")
+        → runAutomationOnce → loadContext(payload.entityType="company")
+        → loadCompanyContext
+```
+
+The last `loadContext` dispatch selects the company loader. Other automation paths
+can still reach other tables and emit further triggers: runtime rule configuration
+and computed contexts are unknown. The graph supplies facts for later interpretation;
+it does not label accesses as primary, audit, authorization, or incidental.
+
 ## Deliberate limits
 
 This is a structural approximation of possible execution, not a runtime trace.
-Both sides of branches and passed callbacks count. An unknown registry key or
+Unknown branches remain possible. Source-owned helpers reach callbacks through
+their actual calls; external code is assumed capable of invoking passed callbacks.
+An unknown registry key or
 array index contributes every statically listed candidate; a constant key/index
 selects only its entry. SQL evaluation unions a local variable's initializer and
 direct assignments before its use; compound assignments and writes from closures
 remain unresolved. Other mutable variables are not treated as constants.
-Arguments are bound when expanding SQL-returning helpers, but the cached database
-call graph still analyzes each function independently of its callers. It doesn't
-interpret general query builders, model module initialization, or resolve arbitrary
-dynamic dispatch. Array mutation through aliases or helper functions is not tracked.
+There is no general return-value or database-result propagation, loop simulation,
+interpreter for query builders, module-initialization analysis, or arbitrary dynamic
+dispatch. SQL-returning helpers and SDK factories have their existing specialized
+return analysis; it can still union branches. Mutation through aliases or helper
+functions is not tracked. Defaults for destructured fields and arbitrary string
+transformations are not evaluated.
+
+Specialization is capped at 32 literal contexts per function/callback combination.
+Further contexts use unknown arguments and emit `analysis-context-limit` when
+the function is on a retained path, keeping possible effects instead of truncating
+a recursive call chain. The graph does not
+record execution counts, call order, runtime branch outcomes, or general predicates.
 
 Runtime SQL fragments and computed table names produce diagnostics. When a
 query cannot be fully parsed, recognizable quoted `FROM`/`JOIN` references and
@@ -122,10 +188,11 @@ entities. Known Zite (`ziteUsers`) and PostgreSQL (`pg_timezone_names`) tables
 produce informational notices; unknown tables still produce warnings. Diagnostics
 are deduplicated by finding, even when many endpoints reach the same helper.
 
-## Example diagnostic audit
+## Historical diagnostic audit
 
 Audited the local CRM `e21ae1a`, grants `d1b8e90`, and property `71bb2c6`
-revisions. Tests regenerate their adjacent JSON models.
+revisions before call-context propagation. The counts below describe that earlier
+pass; tests regenerate their adjacent JSON models with the current analyzer.
 
 | Repository | Original warnings | Resolved | Reclassified as info | Remaining warnings |
 | --- | ---: | ---: | ---: | ---: |

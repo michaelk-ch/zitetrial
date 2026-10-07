@@ -5,6 +5,7 @@ import { accessLabel, buildAccessMatrix, filterMatrix, usedColumns } from "./acc
 
 const model = systemModelSchema.parse({
   schemaVersion: 1, repository: { name: "Matrix example" },
+  callGraph: { entries: [], nodes: [] },
   apps: [
     { id: "a", name: "App A", visibility: "internal" },
     { id: "b", name: "App B", visibility: "public" },

@@ -1,11 +1,14 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { Node, Project, ScriptTarget, ModuleKind, ModuleResolutionKind, SyntaxKind } from "ts-morph";
 import { systemModelSchema } from "../system-model/schema.ts";
-import type { Diagnostic, Relationship, SystemModel, TableOperation } from "../system-model/schema.ts";
+import type { CallGraph, Diagnostic, Relationship, SystemModel, TableOperation } from "../system-model/schema.ts";
 import { integrationFor } from "./integrations.ts";
 import { sqlTables } from "./sql.ts";
-import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
+import { callable, callables, constant, constantKey, literal, origin, origins, property } from "./syntax.ts";
+import type { Bindings } from "./syntax.ts";
+import { contextBindings, literalFacts, walkBody } from "./flow.ts";
 import { sqlDiagnostic, sqlTexts } from "./sql-text.ts";
 
 type TableDefinition = {
@@ -17,7 +20,12 @@ type Finding =
   | { kind: "table"; tableId: string; operation: TableOperation; evidence: string }
   | { kind: "integration"; service: NonNullable<ReturnType<typeof integrationFor>>; evidence: string }
   | { kind: "diagnostic"; diagnostic: Diagnostic };
-type Scope = { findings: Finding[]; callees: Set<Node> };
+type Scope = {
+  fn: Node; bindings: Bindings; scanned: boolean;
+  findings: Finding[];
+  calls: { target: Scope; kind: "call" | "callback"; evidence: string }[];
+  graph: CallGraph["nodes"][number];
+};
 
 const methodOperations = new Map<string, TableOperation>([
   ["findAll", "read"], ["findOne", "read"],
@@ -45,6 +53,7 @@ export async function analyzeRepository(
     readdir(path.join(root, "apps"), { withFileTypes: true }),
   ]);
   const revision = path.basename(root);
+  const callGraph: CallGraph = { entries: [], nodes: [] };
   const model: SystemModel = {
     schemaVersion: 1,
     repository: {
@@ -57,7 +66,7 @@ export async function analyzeRepository(
       id: `table:${table.sdkName}`, name: table.name,
       ...(table.description && { description: table.description }),
     })),
-    integrations: [], endpoints: [], relationships: [], diagnostics: [],
+    integrations: [], endpoints: [], relationships: [], diagnostics: [], callGraph,
   };
   const sdkTables = new Map(schema.tables.map((table, i) => [table.sdkName, model.tables[i].id]));
   const sqlTableIds = new Map(schema.tables.map((table, i) => [
@@ -159,13 +168,62 @@ export async function analyzeRepository(
       `${appPath}/src/**/*.ts`, `${appPath}/src/**/*.tsx`, `${root}/packages/**/*.ts`, `${root}/packages/**/*.tsx`,
       `!${root}/**/node_modules/**`, `!${root}/**/.zite/**`, `!${root}/**/*.d.ts`,
     ]);
-    const scopes = new Map<Node, Scope>();
+    const scopes = new Map<string, Scope>();
+    const contexts = new Map<string, number>();
+    const nodeKey = (node: Node) => `${relativePath(node)}:${node.getStart()}`;
+    const functionName = (node: Node): string => {
+      if (Node.isFunctionDeclaration(node) || Node.isFunctionExpression(node) || Node.isMethodDeclaration(node)) return node.getName() ?? "<anonymous>";
+      const parent = node.getParent();
+      if (Node.isVariableDeclaration(parent) || Node.isPropertyAssignment(parent)) return parent.getName();
+      return "<callback>";
+    };
 
-    function scan(scopeNode: Node): Scope {
-      const cached = scopes.get(scopeNode);
-      if (cached) return cached;
-      const scope: Scope = { findings: [], callees: new Set() };
-      scopes.set(scopeNode, scope);
+    function context(fn: Node, args: Node[], inherited: Bindings, unknownArguments = false): Scope {
+      const bindings = contextBindings(fn, args, inherited, unknownArguments);
+      const callbacks = [...bindings].map(([parameter, targets]) => [nodeKey(parameter), targets.map(nodeKey)]).sort();
+      const base = JSON.stringify([appId, nodeKey(fn), callbacks]);
+      const constants = [...bindings.constants!].map(([parameter, value]) => [nodeKey(parameter), constantKey(value)] as const)
+        .sort(([a], [b]) => a.localeCompare(b));
+      let key = JSON.stringify([base, constants]);
+      let widened = false;
+      if (!scopes.has(key) && (contexts.get(base) ?? 0) >= 32) {
+        // Widen to unknown arguments rather than discard effects. Callback
+        // identities stay intact, so their bodies remain reachable.
+        bindings.constants!.clear();
+        key = JSON.stringify([base, []]);
+        widened = true;
+      }
+      const cached = scopes.get(key);
+      const limitWarning = () => warning("analysis-context-limit", "Function exceeded 32 literal contexts; additional arguments are treated as unknown.", fn);
+      if (cached) {
+        if (widened && !cached.findings.some((finding) => finding.kind === "diagnostic" && finding.diagnostic.code === "analysis-context-limit")) {
+          cached.findings.push(limitWarning());
+        }
+        return cached;
+      }
+      contexts.set(base, (contexts.get(base) ?? 0) + 1);
+      const facts: CallGraph["nodes"][number]["arguments"] = {};
+      for (const [parameter, value] of bindings.constants!) {
+        const owner = parameter.getFirstAncestor(Node.isFunctionLikeDeclaration);
+        const name = Node.isParameterDeclaration(parameter) ? parameter.getName() : parameter.getText();
+        literalFacts(value, owner === fn ? name : `$capture.${owner ? functionName(owner) : "module"}.${name}`, facts);
+      }
+      const scope: Scope = {
+        fn, bindings, scanned: false, findings: [], calls: [],
+        graph: {
+          id: `call:${createHash("sha256").update(key).digest("hex").slice(0, 16)}`,
+          name: functionName(fn), evidence: [location(fn)], arguments: facts, calls: [], accesses: [],
+        },
+      };
+      if (widened) scope.findings.push(limitWarning());
+      scopes.set(key, scope);
+      return scope;
+    }
+
+    function scan(scope: Scope): Scope {
+      if (scope.scanned) return scope;
+      scope.scanned = true;
+      const bindings = scope.bindings;
       const addTable = (name: string, operation: TableOperation, node: Node, sql = false) => {
         let tableId = (sql ? sqlTableIds : sdkTables).get(name);
         const linkTable = sql && !tableId ? linkTables.get(name) : undefined;
@@ -181,51 +239,58 @@ export async function analyzeRepository(
         ));
         else scope.findings.push(warning("unresolved-table", `Table ${JSON.stringify(name)} is not in zite.schema.json.`, node));
       };
-      const body = bodyOf(scopeNode);
-      if (!body) return scope;
-      function visit(node: Node) {
-        if (Node.isFunctionLikeDeclaration(node)) {
-          // Inline callbacks may run; local function declarations require a call.
-          if (!Node.isFunctionDeclaration(node) && !Node.isVariableDeclaration(node.getParent())) scope.callees.add(node);
-          return;
-        }
-        if (Node.isCallExpression(node)) {
-          const expression = node.getExpression();
-          for (const source of origins(expression)) {
-            if (source.module === "zitejs/db" && source.members[0] === "zite") {
-              const [, table, method] = source.members;
-              if (table === "sql") {
-                const unresolved = new Set<Node>();
-                const queries = sqlTexts(property(node.getArguments()[0], "query"), new Set(), new Map(), unresolved);
-                const results = queries.map(sqlTables);
-                for (const { name, operation } of results.flatMap((result) => result.accesses)) addTable(name, operation, node, true);
-                if (results.some((result) => result.partial || result.failed)) {
-                  const diagnostic = results.some((result) => result.partial) ? sqlDiagnostic(queries, unresolved) : {
-                    code: "unsupported-sql", message: "SQL syntax is not supported by the parser; quoted FROM/JOIN references are retained.",
-                  };
-                  scope.findings.push(warning(diagnostic.code, diagnostic.message, node));
-                }
-              } else if (table !== "auth" && method) {
-                if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
-                else {
-                  const operation = methodOperations.get(method) ?? "unknown";
-                  addTable(table, operation, node);
-                  if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
-                }
+      walkBody(scope.fn, bindings, (node) => {
+        const expression = node.getExpression();
+        for (const source of origins(expression, new Set(), bindings)) {
+          if (source.module === "zitejs/db" && source.members[0] === "zite") {
+            const [, table, method] = source.members;
+            if (table === "sql") {
+              const unresolved = new Set<Node>();
+              const options = constant(node.getArguments()[0], bindings);
+              const query = options && typeof options === "object" ? options.query : undefined;
+              const queries = typeof query === "string" ? [query] : sqlTexts(property(node.getArguments()[0], "query"), new Set(), bindings, unresolved);
+              const results = queries.map(sqlTables);
+              for (const { name, operation } of results.flatMap((result) => result.accesses)) addTable(name, operation, node, true);
+              if (results.some((result) => result.partial || result.failed)) {
+                const diagnostic = results.some((result) => result.partial) ? sqlDiagnostic(queries, unresolved) : {
+                  code: "unsupported-sql", message: "SQL syntax is not supported by the parser; quoted FROM/JOIN references are retained.",
+                };
+                scope.findings.push(warning(diagnostic.code, diagnostic.message, node));
               }
-            } else {
-              const service = integrationFor(source);
-              if (service) scope.findings.push({ kind: "integration", service, evidence: location(node) });
+            } else if (table !== "auth" && method) {
+              if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
+              else {
+                const operation = methodOperations.get(method) ?? "unknown";
+                addTable(table, operation, node);
+                if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
+              }
             }
-          }
-          callables(expression).forEach((target) => scope.callees.add(target));
-          for (const argument of node.getArguments()) {
-            callables(argument).forEach((callback) => scope.callees.add(callback));
+          } else {
+            const service = integrationFor(source);
+            if (service) scope.findings.push({ kind: "integration", service, evidence: location(node) });
           }
         }
-        node.forEachChild(visit);
-      }
-      visit(body);
+        const targets = callables(expression, bindings);
+        for (const target of targets) scope.calls.push({ target: context(target, node.getArguments(), bindings), kind: "call", evidence: location(node) });
+        // Source-owned helpers invoke their bound callbacks at the actual
+        // call site. Unknown/external code may invoke any passed callback.
+        if (!targets.length) for (const argument of node.getArguments()) {
+          for (const callback of callables(argument, bindings)) scope.calls.push({
+            target: context(callback, [], bindings, true), kind: "callback", evidence: location(node),
+          });
+        }
+      });
+      scope.graph.calls = [...new Map(scope.calls.map((call) => {
+        const fact = { nodeId: call.target.graph.id, kind: call.kind, evidence: [call.evidence] };
+        return [JSON.stringify(fact), fact];
+      })).values()];
+      scope.graph.accesses = [...new Map(scope.findings.flatMap((finding) => {
+        if (finding.kind === "diagnostic") return [];
+        const fact: CallGraph["nodes"][number]["accesses"][number] = finding.kind === "table"
+          ? { kind: "table-access", tableId: finding.tableId, operation: finding.operation, evidence: [finding.evidence] }
+          : { kind: "integration-use", integrationId: `integration:${finding.service.provider}`, evidence: [finding.evidence] };
+        return [[JSON.stringify(fact), fact] as const];
+      })).values()];
       return scope;
     }
 
@@ -250,24 +315,50 @@ export async function analyzeRepository(
         record(endpointId, warning("unsupported-endpoint", "Could not resolve createEndpoint's execute function.", definition ?? file));
         continue;
       }
-      const visited = new Set<Node>();
-      const pending = [start];
+      const entry = context(start, [], new Map(), true);
+      callGraph.entries.push({ endpointId, nodeId: entry.graph.id });
+      const visited = new Set<Scope>();
+      const pending = [entry];
       while (pending.length) {
         const node = pending.pop()!;
         if (visited.has(node)) continue;
         visited.add(node);
         const scope = scan(node);
         scope.findings.forEach((finding) => record(endpointId, finding));
-        pending.push(...scope.callees);
+        pending.push(...scope.calls.map((call) => call.target));
       }
+    }
+    // Keep the graph about accesses and unresolved findings. Pure formatting
+    // utilities add no provenance and need not inflate the serialized model.
+    const retained = new Set([...scopes.values()].filter((scope) => scope.findings.some((finding) =>
+      finding.kind !== "diagnostic" || finding.diagnostic.code !== "analysis-context-limit")).map((scope) => scope.graph.id));
+    for (const entry of callGraph.entries) retained.add(entry.nodeId);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const scope of scopes.values()) if (!retained.has(scope.graph.id) && scope.calls.some((call) => retained.has(call.target.graph.id))) {
+        retained.add(scope.graph.id);
+        changed = true;
+      }
+    }
+    for (const scope of scopes.values()) if (retained.has(scope.graph.id)) {
+      scope.graph.calls = scope.graph.calls.filter((call) => retained.has(call.nodeId));
+      callGraph.nodes.push(scope.graph);
     }
   }
   model.relationships = [...relationships].sort(([a], [b]) => a.localeCompare(b)).map(([, relationship]) => relationship);
-  model.diagnostics = [...diagnostics.values()];
+  const retainedDefinitions = new Set(callGraph.nodes.flatMap((node) => node.evidence));
+  model.diagnostics = [...diagnostics.values()].filter((diagnostic) => diagnostic.code !== "analysis-context-limit" ||
+    diagnostic.evidence.some((location) => retainedDefinitions.has(location)));
   for (const collection of [model.apps, model.tables, model.endpoints, model.integrations]) {
     collection.sort((a, b) => a.id.localeCompare(b.id));
   }
   for (const item of [...model.endpoints, ...model.integrations, ...model.relationships]) item.evidence.sort();
   model.diagnostics.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  callGraph.nodes.sort((a, b) => a.id.localeCompare(b.id));
+  for (const node of callGraph.nodes) {
+    node.calls.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    node.accesses.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  }
   return systemModelSchema.parse(model);
 }
