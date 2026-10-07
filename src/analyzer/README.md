@@ -41,6 +41,12 @@ does not emit a model or accept an output filename.
 ## Analysis
 
 - Load every schema table and app; map `external` access to `public` visibility.
+- Resolve implicit SQL link tables from `linked_record` fields and their target
+  table IDs. Their names concatenate the sorted PascalCase SDK table names.
+  Referenced link tables become separate table entities with `table:link:` IDs,
+  preserving SQL `read`/`join` roles. Inverse fields and multiple links between
+  the same tables share one entity. These are SQL tables, not SDK clients;
+  explicit schema tables take precedence on a name collision.
 - Treat files under `apps/*/src/api` as endpoints. Read `createEndpoint`'s
   description and start from its `execute` function.
 - Follow named calls, aliases, re-exports, client factories, and callbacks through
@@ -76,7 +82,7 @@ does not emit a model or accept an output filename.
   and reserved aliases without removing operands or their subqueries.
 - Detect service calls from SDK imports and instances. The small registry in
   `integrations.ts` covers Zite Email, Airtable, Anthropic, OpenAI, Gemini, Stripe,
-  and Slack. Configuration, token checks, constructors, and PDF utilities don't
+  Slack, and Notion. Configuration, token checks, constructors, and PDF utilities don't
   count as integration use.
 - Merge repeated endpoint/target edges without storing relationship IDs. Evidence
   is a list of debugging strings such as `packages/shared/server/settings.ts:234`,
@@ -106,7 +112,7 @@ before filling the remaining budget. Conditional array pushes are combined as
 possible accesses; their conditions and execution order across branches are not
 modeled. Registry entries and collection initializers are assumed not to be
 replaced at runtime.
-References absent from the schema produce diagnostics rather than new table
+References absent from the schema and its implicit link tables produce diagnostics rather than new table
 entities. Known Zite (`ziteUsers`) and PostgreSQL (`pg_timezone_names`) tables
 produce informational notices; unknown tables still produce warnings. Diagnostics
 are deduplicated by finding, even when many endpoints reach the same helper.
@@ -141,3 +147,8 @@ analysis is impossible. Their codes and messages identify the missing capability
 | `dynamic-sql` | 2 | CRM shared `demo:176` uses `Set(steps().map(...))`; property `clearDemoData:172` maps a filtered object registry | Evaluate these collection transformations while retaining object-field correlations. |
 
 No source code from the example repositories is executed during this analysis.
+
+The `baden-dampft` example is also covered: its 18 endpoints across three apps
+produce no diagnostics. The model includes four explicit tables, the two queried
+link tables (`FestivalDaysShifts` and `ShiftsVolunteers`), and the Notion integration
+used by `tasks-list/listTasks`.

@@ -119,6 +119,64 @@ test("extracts SQL joins, subqueries, CTEs, and imported fragments; reports part
   assert.deepEqual(broken.accesses.map(({ name }) => name), ["Customers"]);
 });
 
+test("resolves schema-backed SQL link tables, deduplicating inverse fields without inventing SDK clients", async (t) => {
+  const linked = (tableId) => ({ definition: { type: "linked_record", template: { tableId } } });
+  const root = await fixture(t, {
+    "zite.schema.json": JSON.stringify({ tables: [
+      { id: "t2", name: "Line Items", sdkName: "orderItems", fields: [linked("t1"), linked("t1")] },
+      { id: "t1", name: "Clients", sdkName: "customers", fields: [linked("t2"), linked("missing")] },
+      { id: "t3", name: "Unused", sdkName: "unused" },
+    ] }),
+    "apps/staff/src/api/links.ts": `
+      import { zite } from 'zitejs/db';
+      import { createEndpoint } from 'zitejs/backend';
+      export default createEndpoint({ execute: async () => {
+        await zite.sql({ query: 'SELECT * FROM "CustomersOrderItems"' });
+        await zite.sql({ query: 'SELECT * FROM "Customers" JOIN "CustomersOrderItems" ON true' });
+        await zite.sql({ query: 'SELECT * FROM "CustomersUnused"' });
+        await zite.customersOrderItems.findAll({});
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.equal(model.tables.length, 4);
+  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+    ["table:customers", ["read"]], ["table:link:CustomersOrderItems", ["join", "read"]],
+  ]);
+  assert.equal(model.diagnostics.length, 2);
+  assert.ok(model.diagnostics.every((d) => d.code === "unresolved-table"));
+  assert.ok(model.diagnostics.some((d) => d.message.includes('CustomersUnused')));
+  assert.ok(model.diagnostics.some((d) => d.message.includes('customersOrderItems')));
+});
+
+test("detects Notion calls through an aliased client but excludes construction and unused helpers", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/notion.ts": `
+      import { Client as NotionClient } from '@notionhq/client';
+      const client = new NotionClient({ auth: process.env.ZITE_NOTION_ACCESS_TOKEN });
+      export function list() { return client.dataSources.query({}); }
+      export function unused() { return client.pages.create({}); }
+    `,
+    "apps/staff/src/api/list.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { list } from '@project/shared/notion';
+      export default createEndpoint({ execute: list });
+    `,
+    "apps/staff/src/api/configure.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { Client } from '@notionhq/client';
+      export default createEndpoint({ execute: () => new Client({}) });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.diagnostics, []);
+  assert.deepEqual(model.integrations.map((i) => [i.name, i.provider]), [["Notion", "notion"]]);
+  assert.deepEqual(model.relationships, [{
+    kind: "integration-use", endpointId: "endpoint:apps/staff/src/api/list",
+    integrationId: "integration:notion", evidence: ["packages/shared/notion.ts:4"],
+  }]);
+});
+
 test("preserves CRUD operations and combines distinct accesses to the same table", async (t) => {
   const root = await fixture(t, {
     "apps/staff/src/api/mutate.ts": `
@@ -432,10 +490,11 @@ test("follows only selected methods in imported phase arrays, including spreads 
 });
 
 // Local checkouts are intentionally not checked into Git. Exercise them when present.
-for (const [name, tables, endpoints, providers] of [
+for (const [name, tables, endpoints, providers, apps = 2] of [
   ["crm", 33, 128, ["anthropic", "zite_email"]],
   ["grant-management", 21, 73, ["anthropic", "zite_email"]],
   ["property-management", 30, 191, ["anthropic", "stripe", "zite_email"]],
+  ["baden-dampft", 6, 18, ["notion"], 3],
 ]) {
   test(`analyzes the ${name} example`, async (t) => {
     const directory = path.resolve("userdata", name);
@@ -446,13 +505,22 @@ for (const [name, tables, endpoints, providers] of [
     const revision = revisions.find((entry) => entry.isDirectory());
     if (!revision) return t.skip("Local example checkout is absent");
     const model = await analyzeRepository(path.join(directory, revision.name));
-    assert.equal(model.apps.length, 2);
+    assert.equal(model.apps.length, apps);
     assert.equal(model.tables.length, tables);
     assert.equal(model.endpoints.length, endpoints);
     assert.deepEqual(model.integrations.map((i) => i.provider).sort(), providers);
     assert.ok(model.relationships.length > endpoints);
     assert.ok(!model.diagnostics.some((d) => d.code === "unsupported-endpoint"));
     assert.ok(!model.diagnostics.some((d) => d.code === "unsupported-sql"));
+    if (name === "baden-dampft") {
+      assert.deepEqual(model.diagnostics, []);
+      for (const table of ["FestivalDaysShifts", "ShiftsVolunteers"]) {
+        assert.ok(model.relationships.some((r) => r.endpointId.endsWith('/getMyShifts') &&
+          r.tableId === `table:link:${table}` && r.operations.includes('join')));
+      }
+      assert.ok(model.relationships.some((r) => r.endpointId === 'endpoint:apps/tasks-list/src/api/listTasks' &&
+        r.integrationId === 'integration:notion'));
+    }
     assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
     assert.ok([...model.apps, ...model.tables].every((entity) => !("evidence" in entity)));
     assert.ok(model.relationships.every((relationship) => !("id" in relationship)));

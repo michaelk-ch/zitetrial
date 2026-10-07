@@ -12,6 +12,7 @@ const services: Record<string, Service> = {
   "@google/genai": { name: "Gemini", provider: "gemini", category: "ai" },
   stripe: { name: "Stripe", provider: "stripe", category: "payments" },
   "@slack/web-api": { name: "Slack", provider: "slack", category: "messaging" },
+  "@notionhq/client": { name: "Notion", provider: "notion", category: "database" },
 };
 
 export function integrationFor(call: Origin): Service | undefined {

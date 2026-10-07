@@ -8,7 +8,10 @@ import { sqlTables } from "./sql.ts";
 import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
 import { sqlDiagnostic, sqlTexts } from "./sql-text.ts";
 
-type TableDefinition = { id: string; name: string; sdkName: string; description?: string };
+type TableDefinition = {
+  id: string; name: string; sdkName: string; description?: string;
+  fields?: { definition: { type: string; template?: { tableId?: string } } }[];
+};
 type AppConfig = { name?: string; description?: string; accessMode?: string };
 type Finding =
   | { kind: "table"; tableId: string; operation: TableOperation; evidence: string }
@@ -60,6 +63,23 @@ export async function analyzeRepository(
   const sqlTableIds = new Map(schema.tables.map((table, i) => [
     table.sdkName[0].toUpperCase() + table.sdkName.slice(1), model.tables[i].id,
   ]));
+  // Zite exposes linked records through SQL link tables, named by the sorted
+  // PascalCase SDK table names. Inverse fields and multiple links share a table.
+  const tablesById = new Map(schema.tables.map((table) => [table.id, table]));
+  const linkTables = new Map<string, SystemModel["tables"][number]>();
+  for (const table of schema.tables) {
+    for (const field of table.fields ?? []) {
+      if (field.definition.type !== "linked_record") continue;
+      const target = tablesById.get(field.definition.template?.tableId ?? "");
+      if (!target) continue;
+      const pair = [table, target].sort((a, b) => a.sdkName < b.sdkName ? -1 : a.sdkName > b.sdkName ? 1 : 0);
+      const name = pair.map((item) => item.sdkName[0].toUpperCase() + item.sdkName.slice(1)).join("");
+      linkTables.set(name, {
+        id: `table:link:${name}`, name,
+        description: `Implicit link table between ${pair[0].name} and ${pair[1].name}.`,
+      });
+    }
+  }
   const relationships = new Map<string, Relationship>();
   const diagnostics = new Map<string, Diagnostic>();
   const relativePath = (node: Node) => path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/");
@@ -133,7 +153,13 @@ export async function analyzeRepository(
       const scope: Scope = { findings: [], callees: new Set() };
       scopes.set(scopeNode, scope);
       const addTable = (name: string, operation: TableOperation, node: Node, sql = false) => {
-        const tableId = (sql ? sqlTableIds : sdkTables).get(name);
+        let tableId = (sql ? sqlTableIds : sdkTables).get(name);
+        const linkTable = sql && !tableId ? linkTables.get(name) : undefined;
+        if (linkTable) {
+          tableId = linkTable.id;
+          sqlTableIds.set(name, tableId);
+          model.tables.push(linkTable);
+        }
         if (tableId) scope.findings.push({ kind: "table", tableId, operation, evidence: location(node) });
         else if (name === "ziteUsers" || name === "pg_timezone_names") scope.findings.push(warning(
           name === "ziteUsers" ? "platform-table" : "system-table",
