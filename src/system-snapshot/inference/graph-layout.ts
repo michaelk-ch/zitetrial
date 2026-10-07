@@ -3,15 +3,15 @@ import type { MatrixGroup, MatrixRow, Operation, Usage } from "./access-matrix.t
 import type { Preprocessed } from "./preprocess.ts";
 
 /**
- * Deterministic three-column layout for the graph view: tables | apps (with endpoints) | integrations.
- * Every connection runs from an app or endpoint in the middle column to a table on the left or an
- * integration on the right, so edges never cross a column and the layout only has to choose the
- * vertical order and position within each column.
+ * Deterministic two-column layout for the graph view: a left column with a "Database" frame of tables
+ * above an "Integrations" frame, and the apps (with endpoints) on the right. Every connection runs
+ * from an app or endpoint to a table or integration on the left, so edges never cross a column and
+ * the layout only has to choose the vertical order and position within each column.
  */
 
 export type GraphFocus = { kind: "app" | "table" | "integration"; id: string } | null;
-/** Joins count as reads; create/update/delete as writes. */
-export type EdgeKind = "read" | "write" | "both" | "unknown" | "call";
+/** Joins count as reads; create/update/delete as writes. Any write makes the edge a write. */
+export type EdgeKind = "read" | "write" | "unknown" | "call";
 
 type Rect = { x: number; y: number; w: number; h: number };
 /** Totals across all preprocessed endpoints, independent of the focus. */
@@ -31,29 +31,32 @@ export type GraphEdge = {
   sourceKey: string; appKey: string; targetKey: string;
   x1: number; y1: number; x2: number; y2: number;
 };
-export type GraphColumn = { kind: "tables" | "apps" | "integrations"; x: number; w: number; count: number };
+/** Frame around the tables or the integrations in the left column. */
+export type GraphFrame = Rect & { kind: "tables" | "integrations"; count: number };
 export type GraphLayout = {
-  width: number; height: number; columns: GraphColumn[];
+  width: number; height: number; frames: GraphFrame[];
   apps: GraphApp[]; tables: GraphTable[]; integrations: GraphIntegration[]; edges: GraphEdge[];
 };
 
 export const graphSizes = {
   pad: 48, minWidth: 1080, columnGap: 260,
+  /** Padding inside a frame, its label area, and the space between the two frames. */
+  frame: { pad: 14, header: 38, gap: 28 },
   table: { w: 220, h: 34, gap: 8 },
   integration: { w: 220, h: 54, gap: 14 },
-  app: { w: 300, h: 100, gap: 24, header: 70, row: 24, footer: 10 },
+  app: { w: 300, h: 68, gap: 24, header: 70, row: 24, footer: 10 },
 };
 
 const reads = new Set<Operation>(["read", "join"]);
 const writes = new Set<Operation>(["create", "update", "delete"]);
 
 export function edgeKind(operations: Iterable<Operation>): Exclude<EdgeKind, "call"> {
-  let read = false, write = false;
+  let read = false;
   for (const operation of operations) {
+    if (writes.has(operation)) return "write";
     read ||= reads.has(operation);
-    write ||= writes.has(operation);
   }
-  return read && write ? "both" : write ? "write" : read ? "read" : "unknown";
+  return read ? "read" : "unknown";
 }
 
 const byName = (a: { name: string; id: string }, b: { name: string; id: string }) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
@@ -61,9 +64,10 @@ const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0)
 
 /**
  * Tops for boxes in a fixed order that minimize the squared distance to their desired tops while
- * keeping `gap` between neighbours (isotonic regression by pool-adjacent-violators).
+ * keeping `gap` between neighbours and starting at or below `min` (isotonic regression by
+ * pool-adjacent-violators; clipping the fit to the bound keeps it optimal).
  */
-export function packColumn(desired: number[], heights: number[], gap: number): number[] {
+export function packColumn(desired: number[], heights: number[], gap: number, min = -Infinity): number[] {
   const offsets: number[] = [];
   let offset = 0;
   for (const height of heights) {
@@ -81,7 +85,7 @@ export function packColumn(desired: number[], heights: number[], gap: number): n
       blocks.pop();
     }
   });
-  return blocks.flatMap(({ sum, count }) => Array<number>(count).fill(sum / count)).map((value, index) => value + offsets[index]);
+  return blocks.flatMap(({ sum, count }) => Array<number>(count).fill(Math.max(min, sum / count))).map((value, index) => value + offsets[index]);
 }
 
 /** Positions spread around the middle of [low, high], at most `step` apart. */
@@ -112,7 +116,7 @@ function sideUsage(groups: MatrixGroup[], matches: (row: MatrixRow) => Operation
 }
 
 export function layoutGraph({ groups, tables: allTables, integrations: allIntegrations }: Preprocessed, focus: GraphFocus = null, { top = 0 } = {}): GraphLayout {
-  const { pad, minWidth, columnGap, table: T, integration: I, app: A } = graphSizes;
+  const { pad, minWidth, columnGap, frame: F, table: T, integration: I, app: A } = graphSizes;
 
   let spine: Spine[];
   let tables: Table[];
@@ -161,9 +165,10 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
     else addLinks(item.group, item.group.endpoints, index, null);
   });
 
-  // Vertical placement: alternate between placing the side columns at the mean height of their
-  // connections and the apps at the mean height of theirs. Apps keep their alphabetical order;
-  // tables and integrations are ordered by that mean, which keeps edges short and mostly uncrossed.
+  // Vertical placement: alternate between placing the tables and integrations at the mean height of
+  // their connections and the apps at the mean height of theirs. Apps keep their alphabetical order;
+  // tables and integrations are ordered by that mean within their frame, which keeps edges short and
+  // mostly uncrossed. The integrations frame always sits below the database frame.
   const spineHeights = spine.map((item) => item.expanded ? A.header + Math.max(item.rows.length, 1) * A.row + A.footer : A.h);
   // slots[spine][row] is the row's position inside its expanded app box.
   const slots = spine.map((item) => item.rows.map((_, index) => index));
@@ -174,7 +179,9 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
     integration: { count: integrations.length, h: I.h, gap: I.gap, tops: [] as number[] },
   };
   const placeSides = () => {
+    let min = -Infinity;
     for (const [side, column] of Object.entries(sides) as [Link["side"], typeof sides.table][]) {
+      if (!column.count) continue;
       const anchors = Array.from({ length: column.count }, () => [] as number[]);
       for (const link of links) if (link.side === side) anchors[link.target].push(spineTops[link.spine] + rowOffset(link));
       const names = side === "table" ? tables : integrations;
@@ -182,15 +189,17 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
       const used = desired.map((_, index) => index).filter((index) => desired[index] !== Infinity)
         .sort((a, b) => desired[a] - desired[b] || byName(names[a], names[b]));
       const unused = desired.map((_, index) => index).filter((index) => desired[index] === Infinity);
-      const packed = packColumn(used.map((index) => desired[index]), used.map(() => column.h), column.gap);
+      const packed = packColumn(used.map((index) => desired[index]), used.map(() => column.h), column.gap, min);
       column.tops = [];
       used.forEach((index, position) => { column.tops[index] = packed[position]; });
       // Unused entries go last, after a wider gap, so the connected ones stay together.
-      let next = used.length ? packed[packed.length - 1] + column.h + column.gap * 4 : spineTops[0] ?? 0;
+      let next = used.length ? packed[packed.length - 1] + column.h + column.gap * 4 : Math.max(min, spineTops[0] ?? 0);
       for (const index of unused) {
         column.tops[index] = next;
         next += column.h + column.gap;
       }
+      // The next frame starts below this one: its bottom padding, the gap, and the next label area.
+      min = Math.max(...column.tops) + column.h + F.pad + F.gap + F.header;
     }
   };
   const placeSpine = () => {
@@ -219,22 +228,15 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
   }
 
   // Columns, centred horizontally when the canvas is wider than the content.
-  const columnSpecs: [GraphColumn["kind"], number, number][] = [];
-  if (tables.length) columnSpecs.push(["tables", T.w, tables.length]);
-  columnSpecs.push(["apps", A.w, spine.length]);
-  if (integrations.length) columnSpecs.push(["integrations", I.w, integrations.length]);
-  const contentWidth = columnSpecs.reduce((sum, [, w]) => sum + w, 0) + columnGap * (columnSpecs.length - 1);
+  const frameWidth = Math.max(T.w, I.w) + F.pad * 2;
+  const leftWidth = tables.length || integrations.length ? frameWidth + columnGap : 0;
+  const contentWidth = leftWidth + A.w;
   const width = Math.max(minWidth, contentWidth + pad * 2);
-  let x = (width - contentWidth) / 2;
-  const columns = columnSpecs.map(([kind, w, count]) => {
-    const column = { kind, x, w, count };
-    x += w + columnGap;
-    return column;
-  });
-  const columnX = (kind: GraphColumn["kind"]) => columns.find((column) => column.kind === kind)?.x ?? 0;
+  const frameX = (width - contentWidth) / 2;
+  const appX = frameX + leftWidth;
 
-  // Shift everything so the topmost box sits at `top`.
-  const allTops = [...spineTops, ...sides.table.tops, ...sides.integration.tops];
+  // Shift everything so the topmost box or frame sits at `top`.
+  const allTops = [...spineTops, ...[sides.table.tops, sides.integration.tops].filter((tops) => tops.length).map((tops) => Math.min(...tops) - F.header)];
   const shift = top - (allTops.length ? Math.min(...allTops) : 0);
 
   const apps: GraphApp[] = spine.map((item, index) => {
@@ -242,7 +244,7 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
     const tableOperations = [...item.group.access.values()];
     return {
       key: `app:${item.group.app.id}`, app: item.group.app, expanded: item.expanded,
-      x: columnX("apps"), y, w: A.w, h: spineHeights[index],
+      x: appX, y, w: A.w, h: spineHeights[index],
       totalEndpoints: item.group.endpoints.length,
       stats: {
         reads: tableOperations.filter((operations) => [...operations].some((operation) => reads.has(operation))).length,
@@ -260,11 +262,11 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
   const rowNodes = apps.map((app) => app.rows);
   for (const app of apps) app.rows = [...app.rows].sort((a, b) => a.y - b.y);
   const graphTables: GraphTable[] = tables.map((entity, index) => ({
-    key: `table:${entity.id}`, entity, x: columnX("tables"), y: Math.round(sides.table.tops[index] + shift), w: T.w, h: T.h,
+    key: `table:${entity.id}`, entity, x: frameX + F.pad, y: Math.round(sides.table.tops[index] + shift), w: T.w, h: T.h,
     usage: sideUsage(groups, (row) => { const operations = row.access.get(entity.id); return operations ? [...operations] : null; }),
   }));
   const graphIntegrations: GraphIntegration[] = integrations.map((entity, index) => ({
-    key: `integration:${entity.id}`, entity, x: columnX("integrations"), y: Math.round(sides.integration.tops[index] + shift), w: I.w, h: I.h,
+    key: `integration:${entity.id}`, entity, x: frameX + F.pad, y: Math.round(sides.integration.tops[index] + shift), w: I.w, h: I.h,
     usage: sideUsage(groups, (row) => row.integrations.has(entity.id) ? [] : null),
   }));
 
@@ -300,18 +302,25 @@ export function layoutGraph({ groups, tables: allTables, integrations: allIntegr
         edges.push({
           key: `${sourceKey}->${node.key}`, kind: link.kind, operations: link.operations, weight: link.weight,
           sourceKey, appKey: app.key, targetKey: node.key,
-          x1: side === "table" ? app.x : app.x + app.w, y1: sourceY.get(link)!,
-          x2: side === "table" ? node.x + node.w : node.x, y2: ys[position],
+          x1: app.x, y1: sourceY.get(link)!, x2: node.x + node.w, y2: ys[position],
         });
       });
     }
   }
   edges.sort((a, b) => a.key.localeCompare(b.key));
 
-  const bottoms = [...apps, ...graphTables, ...graphIntegrations].map((box) => box.y + box.h);
+  const frames: GraphFrame[] = [];
+  for (const [kind, nodes] of [["tables", graphTables], ["integrations", graphIntegrations]] as const) {
+    if (!nodes.length) continue;
+    const y = Math.min(...nodes.map((node) => node.y)) - F.header;
+    const bottom = Math.max(...nodes.map((node) => node.y + node.h)) + F.pad;
+    frames.push({ kind, x: frameX, y, w: frameWidth, h: bottom - y, count: nodes.length });
+  }
+
+  const bottoms = [...apps, ...frames].map((box) => box.y + box.h);
   const byTop = (a: { y: number }, b: { y: number }) => a.y - b.y;
   return {
-    width, height: (bottoms.length ? Math.max(...bottoms) : top) + pad, columns,
+    width, height: (bottoms.length ? Math.max(...bottoms) : top) + pad, frames,
     apps, tables: graphTables.sort(byTop), integrations: graphIntegrations.sort(byTop), edges,
   };
 }

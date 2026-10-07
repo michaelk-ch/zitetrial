@@ -14,15 +14,13 @@ import AccessOptionsControls from "./access-options";
 // The graph is plain SVG with inline presentation attributes, so the exported image matches the screen.
 const SANS = "Arial, Helvetica, sans-serif";
 const MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-const HEADER = 156;
 const INK = "#1f2328";
 const MUTED = "#6e7379";
 const FAINT = "#a3a7ad";
 const BORDER = "#dfe1e4";
 
-// Writes are red and reads blue, so edges that do both blend to violet.
-const colors: Record<EdgeKind, string> = { read: "#3b7ddd", write: "#e5484d", both: "#8e4ec6", unknown: "#9aa0a6", call: "#12a594" };
-const legend: [EdgeKind, string][] = [["read", "Reads"], ["write", "Writes"], ["both", "Reads & writes"], ["call", "Calls"], ["unknown", "Unclassified"]];
+// Any write is red; read-only access is blue.
+const colors: Record<EdgeKind, string> = { read: "#3b7ddd", write: "#e5484d", unknown: "#9aa0a6", call: "#12a594" };
 const verbs: Record<Operation, string> = { read: "reads", join: "joins", create: "creates", update: "updates", delete: "deletes", unknown: "accesses (unclassified)" };
 const visibility = {
   public: { label: "Public", fill: "#e6f4ec", ink: "#257047" },
@@ -145,29 +143,14 @@ function Icon({ x, y, size = 16, color, children }: { x: number; y: number; size
 const tableIcon = <><rect x="1.5" y="2.5" width="13" height="11" rx="2" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M1.5 6.5h13M6 6.5v7" stroke="currentColor" strokeWidth="1.4" /></>;
 const appIcon = <><rect x="1.5" y="2" width="13" height="12" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.5" /><path d="M1.5 5.5h13" stroke="currentColor" strokeWidth="1.5" /><circle cx="3.8" cy="3.8" r=".6" /><circle cx="5.6" cy="3.8" r=".6" /></>;
 
-function Header({ kicker, title, subtitle, width, kinds }: { kicker: string; title: string; subtitle: string; width: number; kinds: Set<EdgeKind> }) {
+function Header({ kicker, title, subtitle, width, divider }: { kicker: string; title: string; subtitle: string; width: number; divider: number }) {
   const { pad } = graphSizes;
-  const items = legend.filter(([kind]) => kinds.has(kind) || kind === "read" || kind === "write");
-  const font = `12px ${SANS}`;
-  const widths = items.map(([, label]) => 26 + textWidth(label, font) + 18);
-  const starts = widths.map((_, index) => width - pad + 18 - widths.slice(index).reduce((sum, value) => sum + value, 0));
-  const titleFont = `700 26px ${SANS}`;
   return (
     <g fontFamily={SANS}>
       <text x={pad} y={46} fontSize={11} fontWeight={700} letterSpacing={1.4} fill={FAINT}>{kicker.toUpperCase()}</text>
-      <text x={pad} y={78} fontSize={26} fontWeight={700} letterSpacing={-0.6} fill={INK}>{fit(title, width - pad * 2 - 420, titleFont)}</text>
-      <text x={pad} y={102} fontSize={13} fill={MUTED}>{fit(subtitle, width - pad * 2 - 120, `13px ${SANS}`)}</text>
-      {items.map(([kind, label], index) => {
-        const itemX = starts[index];
-        const line = (dy: number, color: string) => <path d={`M${itemX} ${48 + dy}h20`} stroke={color} strokeWidth={2.4} strokeLinecap="round" strokeDasharray={kind === "unknown" ? "3 3" : undefined} />;
-        return (
-          <g key={kind}>
-            {line(0, colors[kind])}
-            <text x={itemX + 26} y={52} fontSize={12} fill={MUTED}>{label}</text>
-          </g>
-        );
-      })}
-      <path d={`M${pad} 124H${width - pad}`} stroke="#ebecee" />
+      <text x={pad} y={78} fontSize={26} fontWeight={700} letterSpacing={-0.6} fill={INK}>{fit(title, width - pad * 2, `700 26px ${SANS}`)}</text>
+      {subtitle && <text x={pad} y={102} fontSize={13} fill={MUTED}>{fit(subtitle, width - pad * 2, `13px ${SANS}`)}</text>}
+      <path d={`M${pad} ${divider}H${width - pad}`} stroke="#ebecee" />
     </g>
   );
 }
@@ -182,7 +165,6 @@ function AppNode({ node, focus, tokens, onFocus, onHover, pinned, onPin }: { nod
   const endpointText = node.expanded && node.rows.length !== node.totalEndpoints
     ? `${node.rows.length} of ${plural(node.totalEndpoints, "endpoint")}`
     : plural(node.totalEndpoints, "endpoint");
-  const stats: [EdgeKind, string][] = [["read", `reads ${node.stats.reads}`], ["write", `writes ${node.stats.writes}`], ["call", `calls ${node.stats.calls}`]];
   const nameFont = `700 14.5px ${SANS}`;
   const rowFont = `11.5px ${MONO}`;
   return (
@@ -203,13 +185,7 @@ function AppNode({ node, focus, tokens, onFocus, onHover, pinned, onPin }: { nod
         </g>
       )}
       <text x={x + 62 + (badgeWidth ? badgeWidth + 8 : 0)} y={y + 51} fontFamily={SANS} fontSize={12} fill={MUTED}>{endpointText}</text>
-      <path d={`M${x + 1} ${y + 66}h${w - 2}`} stroke="#eef0f2" />
-      {!node.expanded && stats.map(([kind, label], index) => (
-        <g key={kind}>
-          <circle cx={x + 22 + index * 92} cy={y + 83} r={3.5} fill={colors[kind]} />
-          <text x={x + 31 + index * 92} y={y + 87} fontFamily={SANS} fontSize={12} fill={MUTED}>{label}</text>
-        </g>
-      ))}
+      {node.expanded && <path d={`M${x + 1} ${y + 66}h${w - 2}`} stroke="#eef0f2" />}
       {node.expanded && node.rows.length === 0 && (
         <text x={x + 18} y={y + graphSizes.app.header + 16} fontFamily={SANS} fontSize={12} fill={FAINT}>No endpoints</text>
       )}
@@ -334,10 +310,7 @@ function describe(model: SystemModel, layout: GraphLayout, focus: GraphFocus) {
       subtitle: `${entity.category ? `${titleCase(entity.category)} integration` : "Integration"} · called by ${plural(usage.endpoints, "endpoint")} in ${plural(usage.apps, "app")}`,
     };
   }
-  return {
-    kicker: "System map", title: repo,
-    subtitle: [plural(model.apps.length, "app"), plural(model.endpoints.length, "endpoint"), plural(model.tables.length, "table"), plural(model.integrations.length, "integration")].join(" · "),
-  };
+  return { kicker: "System map", title: repo, subtitle: "" };
 }
 
 /** Renders the SVG at 2× into a PNG and downloads it. */
@@ -391,7 +364,9 @@ export default function GraphView({ model }: { model: SystemModel }) {
 
   // Unused tables and integrations are hidden from the overview but can still be focused.
   const data = useMemo(() => preprocess(model, { ...accessOptions, hideUnused: accessOptions.hideUnused && !focus }), [model, accessOptions, focus]);
-  const layout = useMemo(() => layoutGraph(data, focus, { top: HEADER }), [data, focus]);
+  // Only focused views have a subtitle line under the title.
+  const header = focus ? 156 : 132;
+  const layout = useMemo(() => layoutGraph(data, focus, { top: header }), [data, focus, header]);
   const { tokens, names, related } = useMemo(() => {
     const tokens: Tokens = new Map();
     const names = new Map<string, string>();
@@ -424,7 +399,6 @@ export default function GraphView({ model }: { model: SystemModel }) {
   };
   const highlight = highlightFor(hover ?? pinned);
 
-  const kinds = useMemo(() => new Set(layout.edges.map((edge) => edge.kind)), [layout]);
   const { kicker, title, subtitle } = describe(model, layout, focus);
   const changeFocus = useCallback((next: GraphFocus) => {
     setFocus(next);
@@ -517,7 +491,7 @@ export default function GraphView({ model }: { model: SystemModel }) {
         <svg
           ref={svgRef}
           role="group"
-          aria-label={`${title}: ${subtitle}`}
+          aria-label={subtitle ? `${title}: ${subtitle}` : title}
           width={layout.width}
           height={layout.height}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
@@ -532,16 +506,20 @@ export default function GraphView({ model }: { model: SystemModel }) {
           </defs>
           <rect width={layout.width} height={layout.height} fill="#fafaf9" />
           <rect width={layout.width} height={layout.height} fill="url(#graph-dots)" />
-          <Header kicker={kicker} title={title} subtitle={subtitle} width={layout.width} kinds={kinds} />
-          {layout.columns.map((column) => {
-            const focusedColumn = { app: "apps", table: "tables", integration: "integrations" }[focus?.kind ?? "app"] === column.kind && focus;
-            const label = { tables: "Table", apps: "Application", integrations: "Integration" }[column.kind] + (focusedColumn ? "" : "s");
-            return (
-              <text key={column.kind} x={column.x} y={HEADER - 14} fontFamily={SANS} fontSize={10.5} fontWeight={700} letterSpacing={1.3} fill={FAINT}>
-                {label.toUpperCase()}<tspan dx={6} fill="#c3c6ca">{column.count}</tspan>
+          <Header kicker={kicker} title={title} subtitle={subtitle} width={layout.width} divider={header - 32} />
+          {layout.frames.map((frame) => (
+            <g key={frame.kind}>
+              <rect x={frame.x} y={frame.y} width={frame.w} height={frame.h} rx={16} fill="#f3f3f1" fillOpacity={0.85} stroke="#e4e5e3" />
+              <text x={frame.x + graphSizes.frame.pad + 2} y={frame.y + 24} fontFamily={SANS} fontSize={10.5} fontWeight={700} letterSpacing={1.3} fill={FAINT}>
+                {frame.kind === "tables" ? "DATABASE" : "INTEGRATIONS"}
               </text>
-            );
-          })}
+            </g>
+          ))}
+          {layout.apps.length > 0 && (
+            <text x={layout.apps[0].x} y={header - 14} fontFamily={SANS} fontSize={10.5} fontWeight={700} letterSpacing={1.3} fill={FAINT}>
+              {focus?.kind === "app" ? "APPLICATION" : "APPLICATIONS"}
+            </text>
+          )}
           <Edges edges={layout.edges} tokens={tokens} names={names} />
           <Nodes layout={layout} focus={focus} tokens={tokens} onFocus={changeFocus} onHover={setHover} pinned={pinned} onPin={onPin} />
           <text x={layout.width - graphSizes.pad} y={layout.height - 18} textAnchor="end" fontFamily={SANS} fontSize={10.5} fill="#b9bcc0">

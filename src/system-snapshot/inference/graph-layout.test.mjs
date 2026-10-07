@@ -35,9 +35,9 @@ const data = preprocess(model, { showJoins: true, prioritize: false, hideUnused:
 const edgeSummary = (layout) => layout.edges.map((edge) => `${edge.sourceKey}->${edge.targetKey}:${edge.kind}:${edge.weight}`).sort();
 const boxes = (layout) => [...layout.apps, ...layout.tables, ...layout.integrations];
 
-test("joins count as reads; mutations as writes", () => {
+test("joins count as reads; any mutation makes it a write", () => {
   assert.equal(edgeKind(["join"]), "read");
-  assert.equal(edgeKind(["read", "update"]), "both");
+  assert.equal(edgeKind(["read", "update"]), "write");
   assert.equal(edgeKind(["delete"]), "write");
   assert.equal(edgeKind(["unknown"]), "unknown");
 });
@@ -46,15 +46,21 @@ test("packColumn keeps order and gaps and stays close to the desired tops", () =
   assert.deepEqual(packColumn([0, 100], [10, 10], 5), [0, 100]);
   assert.deepEqual(packColumn([50, 50, 50], [10, 10, 10], 5), [35, 50, 65]);
   assert.deepEqual(packColumn([100, 0], [10, 10], 0), [45, 55]);
+  assert.deepEqual(packColumn([0, 100], [10, 10], 5, 20), [20, 100]);
 });
 
 test("the default view shows every entity and one aggregated edge per app and target", () => {
   const layout = layoutGraph(data);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.expanded, app.rows.length]), [["admin", false, 0], ["portal", false, 0]]);
-  assert.deepEqual(layout.columns.map((column) => column.kind), ["tables", "apps", "integrations"]);
+  assert.deepEqual(layout.frames.map((frame) => frame.kind), ["tables", "integrations"]);
+  // The integrations frame sits below the database frame, in the same column left of the apps.
+  const [database, integrations] = layout.frames;
+  assert.ok(integrations.y >= database.y + database.h);
+  assert.equal(integrations.x, database.x);
+  assert.ok(database.x + database.w < layout.apps[0].x);
   assert.deepEqual(edgeSummary(layout), [
     "app:admin->integration:email:call:1",
-    "app:admin->table:payments:both:2",
+    "app:admin->table:payments:write:2",
     "app:admin->table:users:read:1",
     "app:portal->integration:email:call:1",
     "app:portal->table:payments:write:1",
@@ -78,14 +84,14 @@ test("focusing an app expands its endpoints and keeps only the tables and integr
   assert.deepEqual(edgeSummary(layout), [
     "endpoint:listPayments->table:payments:read:1",
     "endpoint:refund->integration:email:call:1",
-    "endpoint:refund->table:payments:both:1",
+    "endpoint:refund->table:payments:write:1",
     "endpoint:refund->table:users:read:1",
   ]);
 });
 
 test("focusing a table shows only the apps and endpoints that access it, with their operations", () => {
   const layout = layoutGraph(data, { kind: "table", id: "payments" });
-  assert.deepEqual(layout.columns.map((column) => column.kind), ["tables", "apps"]);
+  assert.deepEqual(layout.frames.map((frame) => frame.kind), ["tables"]);
   assert.deepEqual(layout.tables.map((table) => table.entity.id), ["payments"]);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.rows.map((row) => [row.endpoint.id, row.operations])]), [
     ["admin", [["listPayments", ["read", "join"]], ["refund", ["read", "update"]]]],
@@ -97,7 +103,7 @@ test("focusing a table shows only the apps and endpoints that access it, with th
 
 test("focusing an integration shows only the endpoints that call it", () => {
   const layout = layoutGraph(data, { kind: "integration", id: "email" });
-  assert.deepEqual(layout.columns.map((column) => column.kind), ["apps", "integrations"]);
+  assert.deepEqual(layout.frames.map((frame) => frame.kind), ["integrations"]);
   assert.deepEqual(layout.apps.map((app) => [app.app.id, app.rows.map((row) => row.endpoint.id)]), [["admin", ["refund"]], ["portal", ["signup"]]]);
   assert.deepEqual(edgeSummary(layout), ["endpoint:refund->integration:email:call:1", "endpoint:signup->integration:email:call:1"]);
 });
@@ -110,8 +116,8 @@ for (const focus of [null, { kind: "app", id: "admin" }, { kind: "table", id: "u
   test(`boxes never overlap and edges attach to box sides (${focus?.kind ?? "default"})`, () => {
     const top = 100;
     const layout = layoutGraph(data, focus, { top });
-    assert.equal(Math.min(...boxes(layout).map((box) => box.y)), top);
-    for (const column of [layout.apps, layout.tables, layout.integrations]) {
+    assert.equal(Math.min(...[...layout.apps, ...layout.frames].map((box) => box.y)), top);
+    for (const column of [layout.apps, [...layout.tables, ...layout.integrations], layout.frames]) {
       const sorted = [...column].sort((a, b) => a.y - b.y);
       for (let index = 1; index < sorted.length; index++) assert.ok(sorted[index].y >= sorted[index - 1].y + sorted[index - 1].h);
     }
@@ -119,8 +125,8 @@ for (const focus of [null, { kind: "app", id: "admin" }, { kind: "table", id: "u
     for (const edge of layout.edges) {
       const app = byKey.get(edge.appKey);
       const target = byKey.get(edge.targetKey);
-      assert.equal(edge.x1, target.x < app.x ? app.x : app.x + app.w);
-      assert.equal(edge.x2, target.x < app.x ? target.x + target.w : target.x);
+      assert.equal(edge.x1, app.x);
+      assert.equal(edge.x2, target.x + target.w);
       assert.ok(edge.y1 >= app.y && edge.y1 <= app.y + app.h);
       assert.ok(edge.y2 >= target.y && edge.y2 <= target.y + target.h);
     }
