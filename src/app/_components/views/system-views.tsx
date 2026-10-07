@@ -1,6 +1,7 @@
 import type { SystemModel } from "@/system-model/schema";
 import CrudView from "./crud-view";
 import EmptyState from "../empty-state";
+import GraphView from "./graph-view";
 import RawView from "./raw-view";
 import Tabs from "../tabs";
 
@@ -27,6 +28,7 @@ export default function SystemViews({ model }: { model: SystemModel }) {
             </EmptyState>
           ),
         },
+        { id: "graph", label: "Graph", content: <GraphView model={model} /> },
         { id: "raw", label: "Raw", content: <RawView model={model} /> },
         { id: "crud", label: "CRUD", content: <CrudView model={model} /> },
       ]}
@@ -42,7 +44,7 @@ export function SystemViewsSkeleton() {
       <div aria-hidden="true" className="motion-safe:animate-pulse">
         <div className="mb-5 flex items-center justify-between gap-3">
           <div className="flex h-9 gap-2 rounded-lg border border-line bg-subtle p-1">
-            {["w-20", "w-12", "w-14"].map((width) => <div key={width} className={`rounded-md bg-fill ${width}`} />)}
+            {["w-20", "w-14", "w-12", "w-14"].map((width, index) => <div key={index} className={`rounded-md bg-fill ${width}`} />)}
           </div>
           <div className="h-6 w-28 rounded-md bg-fill" />
         </div>

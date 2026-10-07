@@ -51,7 +51,16 @@ Apps and tables do not carry evidence. Shared-code findings can point into
 ## Inference
 
 `inference/` holds pure functions that derive views from a model, such as
-`access-matrix.ts` (per-app and per-endpoint table access and integration calls, plus column filtering, for the CRUD view).
+`access-matrix.ts` (per-app and per-endpoint table access and integration calls, plus column filtering, for the CRUD view)
+and `graph-layout.ts` (the graph view's three-column layout).
+
+The graph layout relies on the model's fixed shape instead of general graph layout: every
+connection runs from an app (or, when expanded, one of its endpoints) in the middle column to a
+table on the left or an integration on the right. Apps stay alphabetical; tables, integrations,
+and expanded endpoint rows are ordered and placed at the mean height of their connections
+(alternating a few rounds, with order-preserving packing), and unused tables go last. Joins count
+as reads and create/update/delete as writes. Focusing an app expands it into endpoints and keeps
+only what it uses; focusing a table or integration keeps only the endpoints that use it.
 
 ## Validation and serialization
 
