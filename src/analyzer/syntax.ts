@@ -1,5 +1,16 @@
 import { Node, SyntaxKind } from "ts-morph";
 
+export type Bindings = Map<Node, Node[]>;
+
+export function bindArguments(fn: Node, args: Node[], bindings: Bindings): Bindings {
+  const bound = new Map(bindings);
+  if (Node.isFunctionLikeDeclaration(fn)) fn.getParameters().forEach((parameter, index) => {
+    const argument = args[index] ?? parameter.getInitializer();
+    if (argument) bound.set(parameter, values(argument, new Set(), bindings));
+  });
+  return bound;
+}
+
 export function unwrap(node: Node): Node {
   while (Node.isAsExpression(node) || Node.isTypeAssertion(node) ||
     Node.isParenthesizedExpression(node) || Node.isNonNullExpression(node) ||
@@ -20,7 +31,11 @@ export function initializer(node: Node): Node | undefined {
   if (Node.isVariableDeclaration(node) || Node.isPropertyAssignment(node) ||
     Node.isParameterDeclaration(node)) return node.getInitializer();
   if (Node.isShorthandPropertyAssignment(node)) {
-    return node.getValueSymbol()?.getDeclarations().map(initializer).find(Boolean);
+    const targets = node.getValueSymbol()?.getDeclarations() ?? [];
+    const value = targets.map(initializer).find(Boolean);
+    if (value) return value;
+    const target = targets.find((target) => Node.isParameterDeclaration(target) || Node.isVariableDeclaration(target) || Node.isBindingElement(target));
+    return target?.getNameNode();
   }
 }
 
@@ -52,71 +67,110 @@ export function bodyOf(node: Node): Node | undefined {
 }
 
 /** Possible values from source-owned maps and arrays, never from all files/types. */
-export function values(node: Node, seen = new Set<Node>()): Node[] {
+export function values(node: Node, seen = new Set<Node>(), bindings: Bindings = new Map()): Node[] {
   node = unwrap(node);
   if (seen.has(node)) return [node];
   seen.add(node);
-  const follow = (value: Node) => values(value, new Set(seen));
+  const follow = (value: Node) => values(value, new Set(seen), bindings);
   if (Node.isConditionalExpression(node)) return [...follow(node.getWhenTrue()), ...follow(node.getWhenFalse())];
+  if (Node.isBinaryExpression(node) && [SyntaxKind.QuestionQuestionToken, SyntaxKind.BarBarToken].includes(node.getOperatorToken().getKind())) {
+    return [...follow(node.getLeft()), ...follow(node.getRight())];
+  }
   if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
-    const keys = Node.isPropertyAccessExpression(node) ? [node.getName()] : stringValues(node.getArgumentExpression(), new Set(seen));
+    const keys = Node.isPropertyAccessExpression(node) ? [node.getName()] : stringValues(node.getArgumentExpression(), new Set(seen), bindings);
     const found = follow(node.getExpression()).flatMap((base) => {
       if (Node.isObjectLiteralExpression(base)) {
-        const members = keys.includes(undefined) ? base.getProperties() : keys.flatMap((key) => base.getProperty(key!) ?? []);
+        const members = keys.includes(undefined) ? base.getProperties() : keys.flatMap((key) => base.getProperty((member) => {
+          if (Node.isSpreadAssignment(member)) return false;
+          const name = member.getNameNode();
+          return (Node.isStringLiteral(name) ? name.getLiteralText() : member.getName()) === key;
+        }) ?? []);
         return members.flatMap((member) => {
           const value = Node.isMethodDeclaration(member) ? member : initializer(member);
           return value ? follow(value) : [];
         });
       }
       if (Node.isArrayLiteralExpression(base)) {
-        const elements = arrayElements(base, new Set(seen));
+        const elements = arrayElements(base, new Set(seen), bindings);
         const selected = keys.includes(undefined) ? elements : keys.flatMap((key) => elements[Number(key)] ?? []);
         return selected.flatMap(follow);
       }
+      if (Node.isNewExpression(base)) {
+        return declarations(base.getExpression()).flatMap((declaration) => Node.isClassDeclaration(declaration)
+          ? keys.flatMap((key) => key ? declaration.getInstanceMethod(key) ?? [] : []) : []);
+      }
       return [];
     });
+    if (found.length) return [...new Set(found)];
+  }
+  // Source-owned, argument-free registries (for example a demo cleanup plan).
+  if (Node.isCallExpression(node) && !node.getArguments().length) {
+    const found = follow(node.getExpression()).flatMap((value) =>
+      (bodyOf(value) ? [value] : declarations(value)).flatMap((fn) =>
+        Node.isFunctionLikeDeclaration(fn) && !fn.getParameters().length ? returns(fn).flatMap(follow) : []));
     if (found.length) return [...new Set(found)];
   }
   if (Node.isIdentifier(node) || Node.isPropertyAccessExpression(node)) {
     const found = declarations(node).flatMap((declaration) => {
+      const bound = bindings.get(declaration);
+      if (bound) return bound.flatMap(follow);
+      if (Node.isBindingElement(declaration)) {
+        const pattern = declaration.getParent();
+        const owner = pattern.getParent();
+        if (!owner) return [];
+        const sources = bindings.get(owner) ?? (initializer(owner) ? follow(initializer(owner)!) : iterationValues(owner));
+        return sources.flatMap((source) => {
+          if (Node.isArrayBindingPattern(pattern) && Node.isArrayLiteralExpression(source)) {
+            const item = arrayElements(source, new Set(seen), bindings)[pattern.getElements().indexOf(declaration)];
+            return item ? follow(item) : [];
+          }
+          if (Node.isObjectBindingPattern(pattern)) {
+            const item = property(source, declaration.getPropertyNameNode()?.getText() ?? declaration.getName());
+            return item ? follow(item) : [];
+          }
+          return [];
+        });
+      }
       const value = initializer(declaration);
       if (value) return follow(value);
       // for (const phase of PHASES) is equivalent to an unknown array index.
-      const loop = declaration.getParent()?.getParent();
-      if (Node.isVariableDeclaration(declaration) && Node.isForOfStatement(loop)) {
-        return follow(loop.getExpression()).flatMap((array) =>
-          Node.isArrayLiteralExpression(array) ? arrayElements(array, new Set(seen)).flatMap(follow) : []);
-      }
-      return [];
+      return iterationValues(declaration);
     });
     if (found.length) return [...new Set(found)];
   }
   return [node];
+
+  function iterationValues(declaration: Node): Node[] {
+    const loop = declaration.getParent()?.getParent();
+    if (!Node.isVariableDeclaration(declaration) || !Node.isForOfStatement(loop)) return [];
+    return follow(loop.getExpression()).flatMap((array) =>
+      Node.isArrayLiteralExpression(array) ? arrayElements(array, new Set(seen), bindings).flatMap(follow) : []);
+  }
 }
 
-export function arrayElements(node: Node, seen = new Set<Node>()): Node[] {
+export function arrayElements(node: Node, seen = new Set<Node>(), bindings: Bindings = new Map()): Node[] {
   if (!Node.isArrayLiteralExpression(node)) return [node];
   return node.getElements().flatMap((element) => Node.isSpreadElement(element)
-    ? values(element.getExpression(), new Set(seen)).flatMap((value) =>
-      seen.has(value) ? [value] : arrayElements(value, new Set([...seen, value])))
+    ? values(element.getExpression(), new Set(seen), bindings).flatMap((value) =>
+      seen.has(value) ? [value] : arrayElements(value, new Set([...seen, value]), bindings))
     : [element]);
 }
 
 /** TypeScript supplies finite key unions, including narrowing inside branches. */
-export function stringValues(node: Node | undefined, seen = new Set<Node>()): (string | undefined)[] {
+export function stringValues(node: Node | undefined, seen = new Set<Node>(), bindings: Bindings = new Map()): (string | undefined)[] {
   if (!node) return [undefined];
   node = unwrap(node); // Ignore casts applied only at the access site.
   const type = node.getType();
   const types = type.isUnion() ? type.getUnionTypes() : [type];
   if (types.every((type) => type.isStringLiteral())) return types.map((type) => String(type.getLiteralValue()));
-  return [...new Set(values(node, seen).map((value) => {
+  return [...new Set(values(node, seen, bindings).map((value) => {
     if (Node.isStringLiteral(value) || Node.isNoSubstitutionTemplateLiteral(value)) return value.getLiteralText();
     if (Node.isNumericLiteral(value)) return value.getText();
   }))];
 }
 
-export function callables(node: Node): Node[] {
-  return [...new Set(values(node).flatMap((value) =>
+export function callables(node: Node, bindings: Bindings = new Map()): Node[] {
+  return [...new Set(values(node, new Set(), bindings).flatMap((value) =>
     bodyOf(value) ? [value] : declarations(value).filter((declaration) => bodyOf(declaration))))];
 }
 
@@ -124,7 +178,7 @@ export function callable(node: Node): Node | undefined {
   return callables(node)[0];
 }
 
-function returns(fn: Node): Node[] {
+export function returns(fn: Node): Node[] {
   const body = bodyOf(fn);
   if (!body) return [];
   if (!Node.isBlock(body)) return [body];

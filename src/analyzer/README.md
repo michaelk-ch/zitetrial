@@ -37,7 +37,8 @@ and set a nonzero exit status; partial-analysis diagnostics are part of the mode
   relative imports, `@/*`, and `@project/*`. Cache findings per function and
   handle recursive calls. Uncalled functions in an imported module contribute no
   findings. Resolve called methods in static object/array registries, including
-  array spreads, computed indexes, and `for...of` loops.
+  array spreads, computed indexes, tuple destructuring, `for...of` loops, and
+  registries returned by argument-free functions.
 - Classify `findAll`/`findOne` as reads and `create`/`update`/`delete`/`bulkCreate`
   as writes. Unknown methods remain `unknown` unless a known operation also exists.
   Computed table names can resolve through finite string-literal types, including
@@ -49,6 +50,12 @@ and set a nonzero exit status; partial-analysis diagnostics are part of the mode
   for lookup. Follow SQL fragments selected from static maps and local arrays
   accumulated with direct `push` calls before `join`. Only values flowing into
   a query are considered; unrelated SQL strings contribute no findings.
+  Expand source-owned SQL helpers with argument bindings, returned clause arrays,
+  mapped lists, literal replacements, and direct local assignments. TypeScript's
+  standard library types distinguish numeric interpolations from unknown SQL;
+  numeric values and parameter indexes do not affect table discovery.
+  Normalize parser gaps around parameters, `LIKE` concatenation, time zones,
+  and reserved aliases without removing operands or their subqueries.
 - Detect service calls from SDK imports and instances. The small registry in
   `integrations.ts` covers Zite Email, Airtable, Anthropic, OpenAI, Gemini, Stripe,
   and Slack. Configuration, token checks, constructors, and PDF utilities don't
@@ -63,20 +70,55 @@ and set a nonzero exit status; partial-analysis diagnostics are part of the mode
 This is a structural approximation of possible execution, not a runtime trace.
 Both sides of branches and passed callbacks count. An unknown registry key or
 array index contributes every statically listed candidate; a constant key/index
-selects only its entry. Mutable variables are not treated as constants based on
-their initializers. It doesn't evaluate inputs, propagate arguments through
-arbitrary functions, interpret general query builders, model module
-initialization, or resolve arbitrary dynamic dispatch. Array mutation through
-aliases or helper functions is not tracked.
+selects only its entry. SQL evaluation unions a local variable's initializer and
+direct assignments before its use; compound assignments and writes from closures
+remain unresolved. Other mutable variables are not treated as constants.
+Arguments are bound when expanding SQL-returning helpers, but the cached database
+call graph still analyzes each function independently of its callers. It doesn't
+interpret general query builders, model module initialization, or resolve arbitrary
+dynamic dispatch. Array mutation through aliases or helper functions is not tracked.
 
 Runtime SQL fragments and computed table names produce diagnostics. When a
 query cannot be fully parsed, recognizable quoted `FROM`/`JOIN` references are
 retained. Tables introduced only by an unresolved fragment can be missed.
-SQL template expansion is capped at 128 combinations, with a dynamic-SQL
-diagnostic if it exceeds that limit. Conditional array pushes are combined as
+SQL template expansion is capped at 128 combinations, with a `sql-expansion-limit`
+diagnostic if it exceeds that limit. Sampling covers both sides of a combination
+before filling the remaining budget. Conditional array pushes are combined as
 possible accesses; their conditions and execution order across branches are not
 modeled. Registry entries and collection initializers are assumed not to be
 replaced at runtime.
-References absent from the schema (including platform tables like `ziteUsers`)
-produce diagnostics rather than new table entities. Diagnostics are deduplicated
-by finding, even when many endpoints reach the same helper.
+References absent from the schema produce diagnostics rather than new table
+entities. Known Zite (`ziteUsers`) and PostgreSQL (`pg_timezone_names`) tables
+produce informational notices; unknown tables still produce warnings. Diagnostics
+are deduplicated by finding, even when many endpoints reach the same helper.
+
+## Example diagnostic audit
+
+Audited the local CRM `e21ae1a`, grants `d1b8e90`, and property `71bb2c6`
+revisions. Tests regenerate their adjacent JSON models.
+
+| Repository | Original warnings | Resolved | Reclassified as info | Remaining warnings |
+| --- | ---: | ---: | ---: | ---: |
+| CRM | 78 | 66 | 1 | 11 |
+| Grant management | 40 | 25 | 2 | 13 |
+| Property management | 90 | 76 | 1 | 13 |
+| Total | 208 | 167 | 4 | 37 |
+
+The models gain 77 endpoint/table/operation findings (39 CRM, 15 grants, 23
+property), retaining all previous accesses. Examples include grants submission
+queries, property report tenant subqueries, and CRM demo cleanup and tuple-based
+mutations. All original parser warnings resolve; runtime values alone no longer
+make otherwise known SQL look dynamic.
+
+The remaining warnings describe implementation limits, not proof that static
+analysis is impossible. Their codes and messages identify the missing capability:
+
+| Code | Count | Investigated cause | What further support would require |
+| --- | ---: | --- | --- |
+| `sql-helper-argument` | 10 | CRM seed/record table helpers; grants `runSeries` and demo `ids`; property dashboard, portfolio, timeline, task-link and portal helpers | Propagate caller contexts into functions that execute SQL, beyond SQL-returning helper expansion. One of these parameters is a column, so not every warning implies a missing table. |
+| `sql-builder-state` | 13 | Eleven grants `getReports` queries share a `Map`-cached parameter binder; property uses compound `openingWhere` assignments and a closure-cached `meParam` | Model collection writes, compound assignments, and closure state. These examples mainly affect predicates and placeholders, but arbitrary unresolved expressions can contain subqueries. |
+| `sql-expansion-limit` | 5 | CRM `reportPipeline:70`, `undoImport:61`, shared `tasks:109`; property `clearDemoData:186,204` | Preserve correlations between repeated object selections and collect accesses without enumerating whole-query combinations. Raising the cap only postpones the problem. |
+| `dynamic-table` | 7 | Five CRM company/contact mutations choose an SDK table from a SQL result's literal discriminator; two property cleanup mutations call a casing-based accessor | Track SQL result projections through loops; bind accessor arguments and evaluate string transformations. The tables are finite in these examples, but are not yet recovered by this analyzer. |
+| `dynamic-sql` | 2 | CRM shared `demo:176` uses `Set(steps().map(...))`; property `clearDemoData:172` maps a filtered object registry | Evaluate these collection transformations while retaining object-field correlations. |
+
+No source code from the example repositories is executed during this analysis.

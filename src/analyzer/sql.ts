@@ -9,8 +9,25 @@ export type SqlTables = { names: string[]; partial: boolean; failed: boolean };
 /** Zite SQL is read-only PostgreSQL. CTE aliases are not physical tables. */
 export function sqlTables(query: string): SqlTables {
   const partial = query.includes(DYNAMIC);
-  // The parser rejects casts on $n parameters. Their values do not affect tables.
-  const normalized = query.replace(tokensPattern, (token) => /^\$\d+$/.test(token) ? "NULL" : token);
+  // These parser grammar gaps don't affect table discovery: parameter values,
+  // LIKE vs equality, and the PostgreSQL-legal alias `at`. Keep operands intact,
+  // including subqueries, and never rewrite comments or quoted text.
+  const tokens = query.match(tokensPattern) ?? [];
+  let index = 0;
+  const normalized = query.replace(tokensPattern, (token) => {
+    const i = index++;
+    // The parser also rejects time-zone conversion of some function results.
+    // A literal/bound time zone has no table references; preserve the operand.
+    for (let start = Math.max(0, i - 3); start <= i; start++) {
+      if (/^at$/i.test(tokens[start]) && /^time$/i.test(tokens[start + 1] ?? "") &&
+        /^zone$/i.test(tokens[start + 2] ?? "") && /^(\$\d+|'(?:''|[^'])*')$/.test(tokens[start + 3] ?? "")) return "";
+    }
+    if (/^\$\d+$/.test(token)) return /^zone$/i.test(tokens[i - 1] ?? "") ? "'UTC'" : "0";
+    if (/^(i?like)$/i.test(token)) return /^(not)$/i.test(tokens[i - 1] ?? "") ? "<>" : "=";
+    if (/^not$/i.test(token) && /^i?like$/i.test(tokens[i + 1] ?? "")) return "";
+    if (/^key$/i.test(token) || (/^at$/i.test(token) && !/^time$/i.test(tokens[i + 1] ?? ""))) return `"${token}"`;
+    return token;
+  });
   try {
     const ast = parser.astify(normalized, { database: "Postgresql" });
     const names = new Set<string>();

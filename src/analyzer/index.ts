@@ -6,7 +6,7 @@ import type { Diagnostic, Relationship, SystemModel } from "../system-model/sche
 import { integrationFor } from "./integrations.ts";
 import { sqlTables } from "./sql.ts";
 import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
-import { sqlTexts } from "./sql-text.ts";
+import { sqlDiagnostic, sqlTexts } from "./sql-text.ts";
 
 type TableDefinition = { id: string; name: string; sdkName: string; description?: string };
 type AppConfig = { name?: string; description?: string; accessMode?: string };
@@ -62,8 +62,8 @@ export async function analyzeRepository(
   const diagnostics = new Map<string, Diagnostic>();
   const relativePath = (node: Node) => path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/");
   const location = (node: Node) => `${relativePath(node)}:${node.getStartLineNumber()}`;
-  const warning = (code: string, message: string, node: Node): Finding => ({
-    kind: "diagnostic", diagnostic: { severity: "warning", code, message, evidence: [location(node)] },
+  const warning = (code: string, message: string, node: Node, severity: Diagnostic["severity"] = "warning"): Finding => ({
+    kind: "diagnostic", diagnostic: { severity, code, message, evidence: [location(node)] },
   });
 
   function record(endpointId: string, finding: Finding) {
@@ -114,7 +114,7 @@ export async function analyzeRepository(
       skipFileDependencyResolution: true,
       compilerOptions: {
         target: ScriptTarget.ESNext, module: ModuleKind.ESNext,
-        moduleResolution: ModuleResolutionKind.Bundler, noLib: true,
+        moduleResolution: ModuleResolutionKind.Bundler,
         baseUrl: root,
         paths: { "@project/*": ["packages/*"], "@/*": [`apps/${entry.name}/src/*`] },
       },
@@ -133,6 +133,10 @@ export async function analyzeRepository(
       const addTable = (name: string, operation: Operation, node: Node, sql = false) => {
         const tableId = (sql ? sqlTableIds : sdkTables).get(name);
         if (tableId) scope.findings.push({ kind: "table", tableId, operation, evidence: location(node) });
+        else if (name === "ziteUsers" || name === "pg_timezone_names") scope.findings.push(warning(
+          name === "ziteUsers" ? "platform-table" : "system-table",
+          `Table ${JSON.stringify(name)} belongs to ${name === "ziteUsers" ? "Zite" : "PostgreSQL"}, outside the application schema.`, node, "info",
+        ));
         else scope.findings.push(warning("unresolved-table", `Table ${JSON.stringify(name)} is not in zite.schema.json.`, node));
       };
       const body = bodyOf(scopeNode);
@@ -149,12 +153,16 @@ export async function analyzeRepository(
             if (source.module === "zitejs/db" && source.members[0] === "zite") {
               const [, table, method] = source.members;
               if (table === "sql") {
-                const results = sqlTexts(property(node.getArguments()[0], "query")).map(sqlTables);
+                const unresolved = new Set<Node>();
+                const queries = sqlTexts(property(node.getArguments()[0], "query"), new Set(), new Map(), unresolved);
+                const results = queries.map(sqlTables);
                 for (const name of new Set(results.flatMap((result) => result.names))) addTable(name, "read", node, true);
-                if (results.some((result) => result.partial || result.failed)) scope.findings.push(warning(
-                  results.some((result) => result.partial) ? "dynamic-sql" : "unsupported-sql",
-                  "SQL could only be partially analyzed; resolved table references are retained.", node,
-                ));
+                if (results.some((result) => result.partial || result.failed)) {
+                  const diagnostic = results.some((result) => result.partial) ? sqlDiagnostic(queries, unresolved) : {
+                    code: "unsupported-sql", message: "SQL syntax is not supported by the parser; quoted FROM/JOIN references are retained.",
+                  };
+                  scope.findings.push(warning(diagnostic.code, diagnostic.message, node));
+                }
               } else if (table !== "auth" && method) {
                 if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
                 else {

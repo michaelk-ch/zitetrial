@@ -151,6 +151,110 @@ test("observes SDK method calls through factories, excluding constructors, token
   assert.equal(model.relationships[0].evidence[0], "packages/shared/ai.ts:5");
 });
 
+test("expands SQL helpers, bound methods, returned clauses, tuple loops, and literal registries", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/queries.ts": `
+      export class Params {
+        values: unknown[] = [];
+        add(value: unknown) { this.values.push(value); return '$' + this.values.length; }
+      }
+      export function clauses(p: { add: (value: unknown) => string }, value: unknown) {
+        const parts = ['true'];
+        if (value) parts.push(\`EXISTS (SELECT 1 FROM "OrderItems" WHERE id = \${p.add(value)})\`);
+        const unused = () => parts.push('EXISTS (SELECT 1 FROM "Unused")');
+        return parts;
+      }
+      export const select = (table: string) => \`SELECT * FROM "\${table}" __WHERE__\`;
+      export function plans() { return [{ query: 'SELECT * FROM "OrderItems"' }]; }
+    `,
+    "apps/staff/src/api/helpers.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      import { Params, clauses, select, plans } from '@project/shared/queries';
+      const queries = { 'people.list': 'SELECT * FROM "Customers"' };
+      export default createEndpoint({ execute: async ({ input }) => {
+        const p = new Params();
+        await zite.sql({ query: select('Customers').replace('__WHERE__', 'WHERE ' + clauses(p, input.id).join(' AND ')) });
+        await zite.sql({ query: queries['people.list'] });
+        for (const plan of plans()) await zite.sql({ query: plan.query });
+        for (const [client, table] of [['customers', 'Customers'], ['orderItems', 'OrderItems']] as const) {
+          await zite.sql({ query: \`SELECT * FROM "\${table}" WHERE id IN (\${input.ids.map((_, i: number) => '$' + (i + 1)).join(',')}) LIMIT \${Math.min(10, input.limit)}\` });
+          await zite[client].delete({});
+        }
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.diagnostics, []);
+  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+    ['table:customers', ['read', 'write']], ['table:orderItems', ['read', 'write']],
+  ]);
+});
+
+test("normalizes PostgreSQL grammar gaps without losing operand tables or reading string contents", () => {
+  for (const query of [
+    `SELECT * FROM "Customers" WHERE id::text = $1 LIMIT $2 OFFSET $3`,
+    `SELECT * FROM "Customers" WHERE name NOT LIKE '%' || (SELECT name FROM "OrderItems" LIMIT 1) || '%'`,
+    `SELECT * FROM "Customers" WHERE name ILIKE '%' || name::text || '%'`,
+    `SELECT COALESCE(created_at, updated_at) AS at, id AS key FROM "Customers" ORDER BY at, key`,
+    `SELECT * FROM "Customers" WHERE (COALESCE(created_at, updated_at) AT TIME ZONE $1)::date > $2::date`,
+    `SELECT 'FROM "Unused" LIKE $1 AT TIME ZONE $2 AS at' FROM "Customers" /* JOIN "Unused" */`,
+  ]) {
+    const result = sqlTables(query);
+    assert.equal(result.failed, false, query);
+    assert.equal(result.partial, false);
+    assert.deepEqual(result.names.sort(), query.includes('FROM "OrderItems"') ? ['Customers', 'OrderItems'] : ['Customers']);
+  }
+});
+
+test("unions direct SQL assignments and distinguishes builder state, helper arguments, and platform tables", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/diagnostics.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      const run = (query: string) => zite.sql({ query });
+      export default createEndpoint({ execute: async ({ input }) => {
+        let clause = '';
+        if (input.related) clause = 'WHERE EXISTS (SELECT 1 FROM "OrderItems")';
+        await zite.sql({ query: 'SELECT * FROM "Customers" ' + clause });
+        clause = 'WHERE EXISTS (SELECT 1 FROM "Unused")';
+        let accumulated = '';
+        if (input.filter) accumulated += input.filter;
+        await zite.sql({ query: 'SELECT * FROM "Customers" ' + accumulated });
+        const cache = new Map<string, string>();
+        cache.set('filter', input.filter);
+        await zite.sql({ query: 'SELECT * FROM "Customers" WHERE ' + cache.get('filter') });
+        await run(input.query);
+        await zite.sql({ query: 'SELECT * FROM "ziteUsers"' });
+        await zite.sql({ query: 'SELECT * FROM pg_timezone_names' });
+      }});
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.relationships.map((r) => r.tableId), ['table:customers', 'table:orderItems']);
+  assert.deepEqual(model.diagnostics.filter((d) => d.severity === 'warning').map((d) => d.code).sort(), [
+    'sql-builder-state', 'sql-builder-state', 'sql-helper-argument',
+  ]);
+  assert.deepEqual(model.diagnostics.filter((d) => d.severity === 'info').map((d) => d.code).sort(), ['platform-table', 'system-table']);
+});
+
+test("reports bounded SQL expansion while sampling every table choice", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/combinations.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      const columns = ${JSON.stringify(Array.from({ length: 20 }, (_, i) => 'c' + i))};
+      const tables = ['Customers', 'OrderItems', 'Unused'];
+      export default createEndpoint({ execute: ({ input }) => zite.sql({
+        query: \`SELECT "\${columns[input.a]}", "\${columns[input.b]}" FROM "\${tables[input.table]}"\`,
+      }) });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.relationships.map((r) => r.tableId), ['table:customers', 'table:orderItems', 'table:unused']);
+  assert.deepEqual(model.diagnostics.map((d) => d.code), ['sql-expansion-limit']);
+});
+
 test("recovers SQL from conditional pushes and selected plans without scanning unrelated strings", async (t) => {
   const root = await fixture(t, {
     "packages/shared/plans.ts": `
@@ -293,6 +397,7 @@ for (const [name, tables, endpoints, providers] of [
     assert.deepEqual(model.integrations.map((i) => i.provider).sort(), providers);
     assert.ok(model.relationships.length > endpoints);
     assert.ok(!model.diagnostics.some((d) => d.code === "unsupported-endpoint"));
+    assert.ok(!model.diagnostics.some((d) => d.code === "unsupported-sql"));
     assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
     assert.ok([...model.apps, ...model.tables].every((entity) => !("evidence" in entity)));
     assert.ok(model.relationships.every((relationship) => !("id" in relationship)));
@@ -316,6 +421,18 @@ for (const [name, tables, endpoints, providers] of [
         assert.ok(relationship.evidence.includes(`apps/crm/src/api/deleteDeals.ts:${line}`));
       }
       assert.ok(!model.relationships.some((r) => r.endpointId.endsWith('/seedWorkspace') && r.kind === 'integration-use'));
+    }
+    if (name === "grant-management") {
+      for (const table of ['submissions', 'applicants', 'reviews', 'submissionLabels', 'messages', 'tasks']) {
+        for (const endpoint of ['exportSubmissions', 'listSubmissions']) assert.ok(model.relationships.some((r) =>
+          r.endpointId.endsWith('/' + endpoint) && r.tableId === 'table:' + table && r.operations.includes('read')), `${endpoint} reads ${table}`);
+      }
+    }
+    if (name === "property-management") {
+      for (const table of ['leaseTenants', 'tenants']) assert.ok(model.relationships.some((r) =>
+        r.endpointId.endsWith('/reportAging') && r.tableId === 'table:' + table && r.operations.includes('read')), `reportAging reads ${table}`);
+      for (const table of ['activity', 'notifications']) assert.ok(model.relationships.some((r) =>
+        r.endpointId.endsWith('/clearDemoData') && r.tableId === 'table:' + table && r.operations.includes('read')), `bounded expansion retains ${table}`);
     }
 
     const json = serializeSystemModel(model) + "\n";
