@@ -10,7 +10,7 @@ Use Node.js 22 and npm. Install dependencies with `npm ci`, then run:
 npm run dev
 ```
 
-Open http://localhost:3000. Edit `src/app/page.tsx` to start building.
+Open http://localhost:3000.
 
 ## Checks and production
 
@@ -26,7 +26,9 @@ npm start
 
 ## Structure
 
-- `src/app/`: pages, layouts, styles, and server route handlers.
+- `src/app/`: routes only (layout, pages, `loading.tsx`, `not-found.tsx`) plus theme tokens in `globals.css`.
+- `src/app/_components/`: viewer UI. Async server components that load data sit next to their skeletons.
+- `src/viewer/`: framework-independent view logic (e.g. the CRUD access matrix), unit-tested with `npm test`.
 - `src/system-model/`: framework-independent Zod contract shared by the analyzer and viewer.
 - `src/analyzer/`: static repository analysis with a reusable function and JSON CLI.
 - `public/`: static assets.

@@ -1,17 +1,23 @@
 import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { discoverWorkspaces } from "@/workspaces/discover";
-import Viewer from "./viewer";
-import ViewsSkeleton from "./views-skeleton";
+import EmptyState from "./_components/empty-state";
+import { SystemViewsSkeleton } from "./_components/system-views";
 
-async function WorkspaceIndex({ searchParams }: PageProps<"/">) {
-  const { workspace: requested } = await searchParams;
-  const workspaces = await discoverWorkspaces();
-  const selected = workspaces.find((workspace) => workspace.id === requested) ?? workspaces[0];
-  if (selected) redirect(`/${encodeURIComponent(selected.id)}`);
-  return <Viewer workspaces={workspaces} />;
+async function FirstWorkspace() {
+  const [first] = await discoverWorkspaces();
+  if (first) redirect(`/${encodeURIComponent(first.id)}`);
+  return (
+    <EmptyState title="No workspaces yet">
+      Add a repository checkout to <code>userdata/&lt;workspace&gt;/&lt;sha&gt;</code>, then refresh to see it here.
+    </EmptyState>
+  );
 }
 
-export default function Home(props: PageProps<"/">) {
-  return <Suspense fallback={<Viewer workspaces={[]} loadingWorkspaces><ViewsSkeleton /></Viewer>}><WorkspaceIndex {...props} /></Suspense>;
+export default function Home() {
+  return (
+    <Suspense fallback={<SystemViewsSkeleton />}>
+      <FirstWorkspace />
+    </Suspense>
+  );
 }

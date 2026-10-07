@@ -3,6 +3,13 @@ import path from "node:path";
 
 export type Workspace = { id: string; revisions: string[] };
 
+const defaultRoot = path.join(process.cwd(), "userdata");
+
+/** Absolute path of the checkout at userdata/<workspace>/<revision>. */
+export function checkoutPath(workspaceId: string, revision: string, root = defaultRoot): string {
+  return path.join(/* turbopackIgnore: true */ root, workspaceId, revision);
+}
+
 async function directories(directory: string): Promise<string[]> {
   try {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -17,9 +24,7 @@ async function directories(directory: string): Promise<string[]> {
 }
 
 /** Discover local checkouts in userdata/<workspace>/<revision>. */
-export async function discoverWorkspaces(
-  root = path.join(process.cwd(), "userdata"),
-): Promise<Workspace[]> {
+export async function discoverWorkspaces(root = defaultRoot): Promise<Workspace[]> {
   const names = await directories(root);
   const workspaces = await Promise.all(
     names.map(async (id) => ({

@@ -2,4 +2,22 @@
 
 @theme {
   --font-sans: Arial, Helvetica, sans-serif;
+
+  --color-ink: #202020;
+  --color-muted: #777777;
+  --color-faint: #a0a0a0;
+  --color-line: #e8e8e8;
+  --color-line-strong: #dedede;
+  --color-surface: #fcfcfc;
+  --color-subtle: #fafafa;
+  --color-canvas: #eeeff0;
+  --color-fill: #ececec;
+  --color-focus: #8d766d;
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
 }
