@@ -14,6 +14,7 @@ function example() {
     apps: [{ id: "staff", name: "Staff", visibility: "internal" }],
     tables: [
       { id: "payments", name: "Payments" },
+      { id: "customers", name: "Customers" },
     ],
     integrations: [{ id: "email", name: "Email", category: "email" }],
     endpoints: [{ id: "send-receipt", name: "Send receipt", appId: "staff" }],
@@ -27,6 +28,11 @@ function example() {
       {
         kind: "integration-use",
         endpointId: "send-receipt", integrationId: "email",
+      },
+      {
+        kind: "table-reference",
+        sourceTableId: "payments", targetTableId: "customers",
+        evidence: ["zite.schema.json"],
       },
     ],
   };
@@ -57,6 +63,8 @@ test("rejects dangling ownership, endpoints, and usage targets", () => {
     (m) => { m.relationships[0].tableId = "missing"; },
     (m) => { m.relationships[1].integrationId = "missing"; },
     (m) => { m.relationships[1].endpointId = "missing"; },
+    (m) => { m.relationships[2].sourceTableId = "missing"; },
+    (m) => { m.relationships[2].targetTableId = "missing"; },
   ];
   for (const mutate of mutations) {
     const input = example();
@@ -91,13 +99,23 @@ test("rejects fields, app-level access, and configured integration relationships
     },
     (m) => { m.relationships[1].usage = "configured"; },
     (m) => { m.relationships[0].endpointId = "staff"; },
-    (m) => { m.relationships.push({ kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }); },
+    (m) => { m.relationships[2].field = "customerId"; },
+    (m) => { m.relationships[2].endpointId = "send-receipt"; },
   ];
   for (const mutate of mutations) {
     const input = example();
     mutate(input);
     assert.equal(systemModelSchema.safeParse(input).success, false);
   }
+});
+
+test("accepts schema-only and self references without endpoints or field details", () => {
+  const input = example();
+  input.endpoints = [];
+  input.relationships = [{ kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }];
+  const model = systemModelSchema.parse(input);
+  assert.deepEqual(model.relationships[0].evidence, []);
+  assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
 });
 
 test("rejects malformed, contradictory, and unsupported serialized data", () => {

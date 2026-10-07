@@ -42,6 +42,12 @@ export const endpointSchema = z.strictObject({
 
 export const relationshipSchema = z.discriminatedUnion("kind", [
   z.strictObject({
+    kind: z.literal("table-reference"),
+    sourceTableId: idSchema,
+    targetTableId: idSchema,
+    evidence: evidenceSchema,
+  }),
+  z.strictObject({
     kind: z.literal("table-access"),
     endpointId: idSchema,
     tableId: idSchema,
@@ -110,6 +116,11 @@ export const systemModelSchema = z.strictObject({
 
   model.relationships.forEach((relationship, index) => {
     const path = ["relationships", index];
+    if (relationship.kind === "table-reference") {
+      requireId(tables, relationship.sourceTableId, [...path, "sourceTableId"]);
+      requireId(tables, relationship.targetTableId, [...path, "targetTableId"]);
+      return;
+    }
     requireId(endpoints, relationship.endpointId, [...path, "endpointId"]);
     if (relationship.kind === "table-access") {
       requireId(tables, relationship.tableId, [...path, "tableId"]);

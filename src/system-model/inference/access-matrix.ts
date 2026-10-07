@@ -25,6 +25,7 @@ function merge(access: Access, tableId: string, operations: Iterable<Operation>)
 export function buildAccessMatrix(model: SystemModel, { showJoins = true, prioritize = false }: { showJoins?: boolean; prioritize?: boolean } = {}): MatrixGroup[] {
   const byEndpoint = new Map<string, Usage>();
   for (const relationship of model.relationships) {
+    if (relationship.kind === "table-reference") continue;
     const usage = byEndpoint.get(relationship.endpointId) ?? emptyUsage();
     if (relationship.kind === "table-access") {
       const operations = relationship.operations.filter((operation) => showJoins || operation !== "join");

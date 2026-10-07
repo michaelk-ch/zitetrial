@@ -41,6 +41,11 @@ does not emit a model or accept an output filename.
 ## Analysis
 
 - Load every schema table and app; map `external` access to `public` visibility.
+- Emit directed `table-reference` relationships from each `linked_record` field
+  to its target schema table. Deduplicate by source/target table pair, including
+  inverse and self-references, without storing fields or cardinality. Evidence
+  points to `zite.schema.json`; missing targets produce `unresolved-table-reference`
+  warnings. Schema references are emitted even when no endpoint uses the tables.
 - Resolve implicit SQL link tables from `linked_record` fields and their target
   table IDs. Their names concatenate the sorted PascalCase SDK table names.
   Referenced link tables become separate table entities with `table:link:` IDs,

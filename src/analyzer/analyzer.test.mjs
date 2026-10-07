@@ -140,13 +140,41 @@ test("resolves schema-backed SQL link tables, deduplicating inverse fields witho
   });
   const model = await analyzeRepository(root);
   assert.equal(model.tables.length, 4);
-  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+  assert.deepEqual(model.relationships.filter((r) => r.kind === "table-access").map((r) => [r.tableId, r.operations]), [
     ["table:customers", ["read"]], ["table:link:CustomersOrderItems", ["join", "read"]],
   ]);
-  assert.equal(model.diagnostics.length, 2);
-  assert.ok(model.diagnostics.every((d) => d.code === "unresolved-table"));
+  assert.deepEqual(model.diagnostics.map((d) => d.code).sort(), ["unresolved-table", "unresolved-table", "unresolved-table-reference"]);
   assert.ok(model.diagnostics.some((d) => d.message.includes('CustomersUnused')));
   assert.ok(model.diagnostics.some((d) => d.message.includes('customersOrderItems')));
+});
+
+test("extracts directed table references without endpoints, deduplicating fields and preserving inverse and self references", async (t) => {
+  const linked = (tableId, isInverse = false) => ({
+    definition: { type: "linked_record", template: { tableId, isInverse, allowMultiple: true } },
+  });
+  const root = await fixture(t, {
+    "zite.schema.json": JSON.stringify({ tables: [
+      { id: "t2", name: "Line Items", sdkName: "orderItems", fields: [linked("t1"), linked("t1")] },
+      { id: "t1", name: "Clients", sdkName: "customers", fields: [linked("t2", true), linked("t1"), linked("missing")] },
+      { id: "t3", name: "Unused", sdkName: "unused", fields: [
+        { sdkName: "customerId", definition: { type: "single_line_text", template: { tableId: "t1" } } },
+      ] },
+    ] }),
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.endpoints, []);
+  assert.equal(model.tables.length, 3);
+  assert.deepEqual(model.relationships, [
+    { kind: "table-reference", sourceTableId: "table:customers", targetTableId: "table:customers", evidence: ["zite.schema.json"] },
+    { kind: "table-reference", sourceTableId: "table:customers", targetTableId: "table:orderItems", evidence: ["zite.schema.json"] },
+    { kind: "table-reference", sourceTableId: "table:orderItems", targetTableId: "table:customers", evidence: ["zite.schema.json"] },
+  ]);
+  assert.equal(model.diagnostics.length, 1);
+  assert.equal(model.diagnostics[0].code, "unresolved-table-reference");
+  assert.deepEqual(model.diagnostics[0].evidence, ["zite.schema.json"]);
+  assert.ok(model.diagnostics[0].message.includes('missing'));
+  assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
+  assert.deepEqual(await analyzeRepository(root), model);
 });
 
 test("detects Notion calls through an aliased client but excludes construction and unused helpers", async (t) => {
@@ -515,11 +543,16 @@ for (const [name, tables, endpoints, providers, apps = 2] of [
     if (name === "baden-dampft") {
       assert.deepEqual(model.diagnostics, []);
       for (const table of ["FestivalDaysShifts", "ShiftsVolunteers"]) {
-        assert.ok(model.relationships.some((r) => r.endpointId.endsWith('/getMyShifts') &&
+        assert.ok(model.relationships.some((r) => r.kind === "table-access" && r.endpointId.endsWith('/getMyShifts') &&
           r.tableId === `table:link:${table}` && r.operations.includes('join')));
       }
       assert.ok(model.relationships.some((r) => r.endpointId === 'endpoint:apps/tasks-list/src/api/listTasks' &&
         r.integrationId === 'integration:notion'));
+      assert.deepEqual(model.relationships.filter((r) => r.kind === "table-reference").map((r) => [r.sourceTableId, r.targetTableId]), [
+        ["table:festivalDays", "table:okMembers"], ["table:festivalDays", "table:shifts"],
+        ["table:okMembers", "table:festivalDays"], ["table:shifts", "table:festivalDays"],
+        ["table:shifts", "table:volunteers"], ["table:volunteers", "table:shifts"],
+      ]);
     }
     assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
     assert.ok([...model.apps, ...model.tables].every((entity) => !("evidence" in entity)));

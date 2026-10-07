@@ -14,13 +14,21 @@ The model describes a single repository snapshot and its shared database:
   integrations used by endpoints; ignore configured-but-unused services.
 - **Endpoints** belong to apps and provide a first level of drill-down.
 - **Relationships** describe endpoint table access (read/join/create/update/delete/unknown) and
-  endpoint integration calls.
+  endpoint integration calls, plus table-to-table references declared in the schema.
 - **Diagnostics** report unsupported patterns, unresolved SQL, or other gaps.
 
 App-to-endpoint ownership is stored once in `endpoint.appId`. Table access and
 integration calls always originate from an endpoint, identified by `endpointId`.
 The viewer can aggregate endpoint findings by app for its overview. Integration
 relationships represent observed calls and need no separate usage classification.
+
+`table-reference` relationships use `sourceTableId` and `targetTableId`. They come
+from `linked_record` fields in `zite.schema.json`, resolved through schema table
+IDs into model table IDs. Multiple fields referencing the same target produce
+one directed relationship. Inverse fields can declare the reverse relationship;
+self-references are allowed. No field names or cardinality are stored. These
+schema relationships are independent of endpoint access and excluded from the
+CRUD matrix. Their evidence points to `zite.schema.json`.
 
 Table operations are the union of observed accesses. `read` covers SDK reads and
 SQL `FROM` sources; `join` identifies physical tables in explicit SQL joins.
@@ -65,6 +73,6 @@ The contract uses only JSON-compatible values. Repository metadata stores a name
 optional URL, and optional commit SHA. The local `userdata/<workspace>/<sha>` checkout
 path is analyzer input and is deliberately absent from the portable model.
 
-Table fields and references, layout, colors, selection state, parsed syntax trees, SQL text, pages, and
+Table fields, layout, colors, selection state, parsed syntax trees, SQL text, pages, and
 endpoint-to-endpoint calls are deferred. This keeps the first version focused on
 the spec's app/table/integration overview and endpoint drill-down.

@@ -26,6 +26,7 @@ const model = systemModelSchema.parse({
     { kind: "table-access", endpointId: "other", tableId: "deal", operations: ["create"] },
     { kind: "integration-use", endpointId: "unused", integrationId: "email" },
     { kind: "integration-use", endpointId: "write", integrationId: "email" },
+    { kind: "table-reference", sourceTableId: "customer", targetTableId: "deal" },
   ],
 });
 const ids = (groups) => groups.map((group) => [group.app.id, group.endpoints.map((row) => row.endpoint.id)]);

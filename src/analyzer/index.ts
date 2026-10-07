@@ -63,6 +63,8 @@ export async function analyzeRepository(
   const sqlTableIds = new Map(schema.tables.map((table, i) => [
     table.sdkName[0].toUpperCase() + table.sdkName.slice(1), model.tables[i].id,
   ]));
+  const relationships = new Map<string, Relationship>();
+  const diagnostics = new Map<string, Diagnostic>();
   // Zite exposes linked records through SQL link tables, named by the sorted
   // PascalCase SDK table names. Inverse fields and multiple links share a table.
   const tablesById = new Map(schema.tables.map((table) => [table.id, table]));
@@ -70,8 +72,22 @@ export async function analyzeRepository(
   for (const table of schema.tables) {
     for (const field of table.fields ?? []) {
       if (field.definition.type !== "linked_record") continue;
-      const target = tablesById.get(field.definition.template?.tableId ?? "");
-      if (!target) continue;
+      const targetId = field.definition.template?.tableId;
+      const target = tablesById.get(targetId ?? "");
+      if (!target) {
+        const diagnostic: Diagnostic = {
+          severity: "warning", code: "unresolved-table-reference",
+          message: `Reference from table ${JSON.stringify(table.sdkName)} could not resolve schema table ID ${JSON.stringify(targetId ?? "<missing>")}.`,
+          evidence: ["zite.schema.json"],
+        };
+        diagnostics.set(JSON.stringify(diagnostic), diagnostic);
+        continue;
+      }
+      const sourceTableId = sdkTables.get(table.sdkName)!;
+      const targetTableId = sdkTables.get(target.sdkName)!;
+      relationships.set(`table-reference:${sourceTableId}->${targetTableId}`, {
+        kind: "table-reference", sourceTableId, targetTableId, evidence: ["zite.schema.json"],
+      });
       const pair = [table, target].sort((a, b) => a.sdkName < b.sdkName ? -1 : a.sdkName > b.sdkName ? 1 : 0);
       const name = pair.map((item) => item.sdkName[0].toUpperCase() + item.sdkName.slice(1)).join("");
       linkTables.set(name, {
@@ -80,8 +96,6 @@ export async function analyzeRepository(
       });
     }
   }
-  const relationships = new Map<string, Relationship>();
-  const diagnostics = new Map<string, Diagnostic>();
   const relativePath = (node: Node) => path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/");
   const location = (node: Node) => `${relativePath(node)}:${node.getStartLineNumber()}`;
   const warning = (code: string, message: string, node: Node, severity: Diagnostic["severity"] = "warning"): Finding => ({
