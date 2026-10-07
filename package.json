@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/system-model/*.test.mjs src/analyzer/*.test.mjs",
+    "test": "node --experimental-strip-types --test src/system-model/*.test.mjs src/analyzer/*.test.mjs src/viewer/*.test.mjs",
     "analyze": "node --experimental-strip-types src/analyzer/cli.ts"
   },
   "dependencies": {

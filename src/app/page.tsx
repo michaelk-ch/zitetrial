@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { discoverWorkspaces } from "@/workspaces/discover";
 import Viewer from "./viewer";
+import ViewsSkeleton from "./views-skeleton";
 
 async function WorkspaceIndex({ searchParams }: PageProps<"/">) {
   const { workspace: requested } = await searchParams;
@@ -12,5 +13,5 @@ async function WorkspaceIndex({ searchParams }: PageProps<"/">) {
 }
 
 export default function Home(props: PageProps<"/">) {
-  return <Suspense fallback={<p className="p-10 text-sm text-[#777]">Loading workspaces…</p>}><WorkspaceIndex {...props} /></Suspense>;
+  return <Suspense fallback={<Viewer workspaces={[]} loadingWorkspaces><ViewsSkeleton /></Viewer>}><WorkspaceIndex {...props} /></Suspense>;
 }
