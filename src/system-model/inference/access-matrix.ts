@@ -1,8 +1,18 @@
 import type { App, Endpoint, Relationship, SystemModel } from "../schema.ts";
 
-type Operation = Extract<Relationship, { kind: "table-access" }>["operations"][number];
+export type Operation = Extract<Relationship, { kind: "table-access" }>["operations"][number];
 type Access = Map<string, Set<Operation>>;
-export type MatrixGroup = { app: App; access: Access; endpoints: { endpoint: Endpoint; access: Access }[] };
+/** Observed table operations and called integration IDs for one endpoint, or an app's union. */
+export type Usage = { access: Access; integrations: Set<string> };
+export type MatrixRow = Usage & { endpoint: Endpoint };
+export type MatrixGroup = Usage & { app: App; endpoints: MatrixRow[] };
+
+/** "any" matches any observed access, including unknown. */
+export type ColumnFilter =
+  | { kind: "table"; id: string; condition: Operation | "any" }
+  | { kind: "integration"; id: string };
+
+const emptyUsage = (): Usage => ({ access: new Map(), integrations: new Set() });
 
 function merge(access: Access, tableId: string, operations: Iterable<Operation>) {
   const combined = access.get(tableId) ?? new Set<Operation>();
@@ -10,32 +20,72 @@ function merge(access: Access, tableId: string, operations: Iterable<Operation>)
   access.set(tableId, combined);
 }
 
-/** App cells are the union of all endpoint operations, including unknown access. */
+/** App cells are the union of all endpoint operations and integration calls, including unknown access. */
 export function buildAccessMatrix(model: SystemModel): MatrixGroup[] {
-  const byEndpoint = new Map<string, Access>();
+  const byEndpoint = new Map<string, Usage>();
   for (const relationship of model.relationships) {
-    if (relationship.kind !== "table-access") continue;
-    const access = byEndpoint.get(relationship.endpointId) ?? new Map();
-    merge(access, relationship.tableId, relationship.operations);
-    byEndpoint.set(relationship.endpointId, access);
+    const usage = byEndpoint.get(relationship.endpointId) ?? emptyUsage();
+    if (relationship.kind === "table-access") merge(usage.access, relationship.tableId, relationship.operations);
+    else usage.integrations.add(relationship.integrationId);
+    byEndpoint.set(relationship.endpointId, usage);
   }
-  const byApp = new Map<string, MatrixGroup["endpoints"]>();
+  const byApp = new Map<string, MatrixRow[]>();
   for (const endpoint of model.endpoints) {
     const endpoints = byApp.get(endpoint.appId) ?? [];
-    endpoints.push({ endpoint, access: byEndpoint.get(endpoint.id) ?? new Map() });
+    endpoints.push({ endpoint, ...(byEndpoint.get(endpoint.id) ?? emptyUsage()) });
     byApp.set(endpoint.appId, endpoints);
   }
   return [...model.apps].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)).map((app) => {
     const endpoints = (byApp.get(app.id) ?? []).sort((a, b) => a.endpoint.name.localeCompare(b.endpoint.name) || a.endpoint.id.localeCompare(b.endpoint.id));
-    const access: Access = new Map();
+    const usage = emptyUsage();
     for (const row of endpoints) {
-      for (const [tableId, operations] of row.access) merge(access, tableId, operations);
+      for (const [tableId, operations] of row.access) merge(usage.access, tableId, operations);
+      for (const integrationId of row.integrations) usage.integrations.add(integrationId);
     }
-    return { app, endpoints, access };
+    return { app, endpoints, ...usage };
   });
 }
 
+/** True when the usage satisfies every filter. */
+export function matchesFilters(usage: Usage, filters: ColumnFilter[]): boolean {
+  return filters.every((filter) => {
+    if (filter.kind === "integration") return usage.integrations.has(filter.id);
+    const operations = usage.access.get(filter.id);
+    return filter.condition === "any" ? Boolean(operations?.size) : Boolean(operations?.has(filter.condition));
+  });
+}
+
+/**
+ * Keeps endpoints that match all column filters and whose name (or app name) contains the query.
+ * Apps without matching endpoints are dropped, except endpoint-less apps matched by name when no
+ * column filters are active. App aggregates are left unchanged.
+ */
+export function filterMatrix(groups: MatrixGroup[], { query = "", filters = [] }: { query?: string; filters?: ColumnFilter[] }): MatrixGroup[] {
+  const needle = query.trim().toLowerCase();
+  const contains = (name: string) => name.toLowerCase().includes(needle);
+  return groups.flatMap((group) => {
+    const appMatches = contains(group.app.name);
+    const endpoints = group.endpoints.filter((row) => (appMatches || contains(row.endpoint.name)) && matchesFilters(row, filters));
+    const keep = endpoints.length > 0 || (appMatches && filters.length === 0);
+    return keep ? [{ ...group, endpoints }] : [];
+  });
+}
+
+/** Table and integration IDs used by at least one endpoint in the given groups. */
+export function usedColumns(groups: MatrixGroup[]): { tables: Set<string>; integrations: Set<string> } {
+  const tables = new Set<string>();
+  const integrations = new Set<string>();
+  for (const { endpoints } of groups) {
+    for (const row of endpoints) {
+      for (const tableId of row.access.keys()) tables.add(tableId);
+      for (const integrationId of row.integrations) integrations.add(integrationId);
+    }
+  }
+  return { tables, integrations };
+}
+
+/** Compact cell label, e.g. "RW" or "?". */
 export function accessLabel(operations?: Set<Operation>): string {
   return ([ ["read", "R"], ["write", "W"], ["unknown", "?"] ] as const)
-    .filter(([operation]) => operations?.has(operation)).map(([, label]) => label).join(", ");
+    .filter(([operation]) => operations?.has(operation)).map(([, label]) => label).join("");
 }

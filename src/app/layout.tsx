@@ -21,7 +21,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </aside>
           <main className="flex min-w-0 flex-1 flex-col bg-canvas">
             <div className="flex-1 rounded-tl-[18px] border-t border-l border-line-strong bg-white px-10 py-11 max-[760px]:px-6 max-[760px]:py-7 max-[540px]:rounded-none max-[540px]:border-0 max-[540px]:px-5">
-              <div className="mx-auto max-w-[780px]">
+              {/* Views that mark themselves data-wide (e.g. the CRUD matrix) get the full width. */}
+              <div className="mx-auto max-w-[780px] has-[[data-wide]]:max-w-[1800px]">
                 <h1 className="mb-4 text-base leading-[normal] font-semibold tracking-[-0.02em]">System overview</h1>
                 <Providers>{children}</Providers>
               </div>

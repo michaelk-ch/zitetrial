@@ -31,7 +31,7 @@ Apps and tables do not carry evidence. Shared-code findings can point into
 ## Inference
 
 `inference/` holds pure functions that derive views from a model, such as
-`access-matrix.ts` (per-app and per-endpoint table access for the CRUD view).
+`access-matrix.ts` (per-app and per-endpoint table access and integration calls, plus column filtering, for the CRUD view).
 
 ## Validation and serialization
 
