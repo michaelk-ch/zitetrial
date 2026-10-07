@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb: installs npm dependencies from package-lock.json.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# npm ci always wipes node_modules; skip it when a restored snapshot already matches the lockfile and Node.
+stamp=node_modules/.setup-stamp
+want="$(node --version) $(sha256sum package-lock.json | cut -d' ' -f1)"
+if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]]; then
+  echo "setup: node_modules up to date"
+else
+  echo "setup: npm ci"
+  time npm ci --no-audit --no-fund
+  echo "$want" > "$stamp"
+fi
