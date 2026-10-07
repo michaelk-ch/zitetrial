@@ -28,6 +28,16 @@ Omit the output filename to write JSON to stdout. Use `npm run --silent analyze`
 when piping stdout, to suppress npm's script banner. Analysis errors go to stderr
 and set a nonzero exit status; partial-analysis diagnostics are part of the model.
 
+Benchmark one complete analysis of a workspace:
+
+```sh
+npm run analyze -- --benchmark userdata/crm/e21ae1a273e47a2aa3d68de00c58570bfd010b4c
+```
+
+This prints the elapsed time in milliseconds for one `analyzeRepository` call,
+excluding CLI startup, JSON serialization, and output writing. Benchmark mode
+does not emit a model or accept an output filename.
+
 ## Analysis
 
 - Load every schema table and app; map `external` access to `public` visibility.
