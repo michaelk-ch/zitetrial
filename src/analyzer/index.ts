@@ -5,7 +5,8 @@ import { systemModelSchema } from "../system-model/schema.ts";
 import type { Diagnostic, Relationship, SourceLocation, SystemModel } from "../system-model/schema.ts";
 import { integrationFor } from "./integrations.ts";
 import { sqlTables } from "./sql.ts";
-import { bodyOf, callable, literal, origin, property, sqlText } from "./syntax.ts";
+import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
+import { sqlTexts } from "./sql-text.ts";
 
 type TableDefinition = { id: string; name: string; sdkName: string; description?: string };
 type AppConfig = { name?: string; description?: string; accessMode?: string };
@@ -148,33 +149,32 @@ export async function analyzeRepository(
         }
         if (Node.isCallExpression(node)) {
           const expression = node.getExpression();
-          const source = origin(expression);
-          if (source?.module === "zitejs/db" && source.members[0] === "zite") {
-            const [, table, method] = source.members;
-            if (table === "sql") {
-              const result = sqlTables(sqlText(property(node.getArguments()[0], "query")));
-              for (const name of result.names) addTable(name, "read", node, true);
-              if (result.partial || result.failed) scope.findings.push(warning(
-                result.partial ? "dynamic-sql" : "unsupported-sql",
-                "SQL could only be partially analyzed; resolved table references are retained.", node,
-              ));
-            } else if (table !== "auth" && method) {
-              if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
-              else {
-                const operation = readMethods.has(method) ? "read" : writeMethods.has(method) ? "write" : "unknown";
-                addTable(table, operation, node);
-                if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
+          for (const source of origins(expression)) {
+            if (source.module === "zitejs/db" && source.members[0] === "zite") {
+              const [, table, method] = source.members;
+              if (table === "sql") {
+                const results = sqlTexts(property(node.getArguments()[0], "query")).map(sqlTables);
+                for (const name of new Set(results.flatMap((result) => result.names))) addTable(name, "read", node, true);
+                if (results.some((result) => result.partial || result.failed)) scope.findings.push(warning(
+                  results.some((result) => result.partial) ? "dynamic-sql" : "unsupported-sql",
+                  "SQL could only be partially analyzed; resolved table references are retained.", node,
+                ));
+              } else if (table !== "auth" && method) {
+                if (table === "<dynamic>") scope.findings.push(warning("dynamic-table", "Computed database table could not be resolved.", node));
+                else {
+                  const operation = readMethods.has(method) ? "read" : writeMethods.has(method) ? "write" : "unknown";
+                  addTable(table, operation, node);
+                  if (operation === "unknown") scope.findings.push(warning("unknown-db-method", `Unclassified database method: ${method}.`, node));
+                }
               }
+            } else {
+              const service = integrationFor(source);
+              if (service) scope.findings.push({ kind: "integration", service, evidence: location(node) });
             }
-          } else if (source) {
-            const service = integrationFor(source);
-            if (service) scope.findings.push({ kind: "integration", service, evidence: location(node) });
           }
-          const target = callable(expression);
-          if (target) scope.callees.add(target);
+          callables(expression).forEach((target) => scope.callees.add(target));
           for (const argument of node.getArguments()) {
-            const callback = callable(argument);
-            if (callback) scope.callees.add(callback);
+            callables(argument).forEach((callback) => scope.callees.add(callback));
           }
         }
         node.forEachChild(visit);

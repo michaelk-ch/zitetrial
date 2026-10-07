@@ -151,6 +151,127 @@ test("observes SDK method calls through factories, excluding constructors, token
   assert.equal(model.relationships[0].evidence[0].path, "packages/shared/ai.ts");
 });
 
+test("recovers SQL from conditional pushes and selected plans without scanning unrelated strings", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/plans.ts": `
+      export const PLANS = {
+        people: { select: 'c.* FROM "Customers" c', order: 'c.id' },
+        orders: { select: 'i.* FROM "OrderItems" i JOIN "Customers" c ON true', order: 'i.id' },
+      };
+      export const UNRELATED = { select: '* FROM "Unused"' };
+    `,
+    "apps/staff/src/api/search.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      export default createEndpoint({ execute: async ({ input }) => {
+        const parts: string[] = [];
+        const unused = () => parts.push('SELECT * FROM "Unused"');
+        if (input.people) parts.push('SELECT id FROM "Customers"');
+        if (input.orders) parts.push('SELECT id FROM "OrderItems"');
+        { const parts = []; parts.push('SELECT * FROM "Unused"'); }
+        await zite.sql({ query: \`SELECT * FROM (\${parts.join(' UNION ALL ')}) results\` });
+        parts.push('SELECT * FROM "Unused"');
+      }});
+    `,
+    "apps/staff/src/api/export.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      import { PLANS, UNRELATED } from '@project/shared/plans';
+      export default createEndpoint({ execute: ({ input }) => {
+        const plan = PLANS[input.kind];
+        return zite.sql({ query: \`SELECT \${plan.select} WHERE \${input.filter} ORDER BY \${plan.order}\` });
+      }});
+    `,
+    "apps/staff/src/api/fixedExport.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      import { PLANS } from '@project/shared/plans';
+      export default createEndpoint({ execute: () => zite.sql({ query: \`SELECT \${PLANS.people.select}\` }) });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  const access = (name) => model.relationships.filter((r) => r.endpointId.endsWith('/' + name)).map((r) => [r.tableId, r.operations]);
+  for (const name of ["search", "export"]) assert.deepEqual(access(name), [
+    ["table:customers", ["read"]], ["table:orderItems", ["read"]],
+  ]);
+  assert.deepEqual(access("fixedExport"), [["table:customers", ["read"]]]);
+  assert.ok(model.diagnostics.some((d) => d.code === "dynamic-sql" && d.evidence[0].path.endsWith('/export.ts')));
+});
+
+test("resolves finite computed table names with branch-specific mutation evidence", async (t) => {
+  const root = await fixture(t, {
+    "apps/staff/src/api/remove.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      export default createEndpoint({ execute: ({ input }) => {
+        const table = String(input.table) as 'customers' | 'orderItems';
+        if (table === 'customers') {
+          return Promise.resolve().then(() => zite[table].update({}));
+        } else {
+          return Promise.resolve().then(() => zite[table].delete({}));
+        }
+      }});
+    `,
+    "apps/staff/src/api/unknown.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { zite } from 'zitejs/db';
+      export default createEndpoint({ execute: ({ input }) => zite[input.table as 'unused'].delete({}) });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
+    ["table:customers", ["write"]], ["table:orderItems", ["write"]],
+  ]);
+  assert.equal(model.relationships[0].evidence[0].line, 7);
+  assert.equal(model.relationships[1].evidence[0].line, 9);
+  assert.equal(model.diagnostics.length, 1);
+  assert.equal(model.diagnostics[0].code, "dynamic-table");
+  assert.ok(model.diagnostics[0].evidence[0].path.endsWith('/unknown.ts'));
+});
+
+test("follows only selected methods in imported phase arrays, including spreads and mutable indexes", async (t) => {
+  const root = await fixture(t, {
+    "packages/shared/phases.ts": `
+      import { zite } from 'zitejs/db';
+      const customerPhase = { run: () => zite.customers.bulkCreate({}), unused: () => zite.unused.delete({}) };
+      const orderPhase = { async run() { await zite.orderItems.create({}); } };
+      const unusedPhase = { run: () => zite.unused.delete({}) };
+      export const BASE = [customerPhase];
+      export const PHASES = [...BASE, orderPhase];
+    `,
+    "apps/staff/src/api/seed.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { PHASES } from '@project/shared/phases';
+      export default createEndpoint({ execute: async () => {
+        for (let index = 0; index < PHASES.length; index++) {
+          const phase = PHASES[index];
+          await phase.run();
+        }
+      }});
+    `,
+    "apps/staff/src/api/seedEach.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { PHASES } from '@project/shared/phases';
+      export default createEndpoint({ execute: async () => {
+        for (const phase of PHASES) await phase.run();
+      }});
+    `,
+    "apps/staff/src/api/seedFirst.ts": `
+      import { createEndpoint } from 'zitejs/backend';
+      import { PHASES } from '@project/shared/phases';
+      export default createEndpoint({ execute: () => PHASES[0].run() });
+    `,
+  });
+  const model = await analyzeRepository(root);
+  for (const endpoint of model.endpoints) {
+    const access = model.relationships.filter((r) => r.endpointId === endpoint.id);
+    const expected = endpoint.name === "seedFirst" ? ["table:customers"] : ["table:customers", "table:orderItems"];
+    assert.deepEqual(access.map((r) => r.tableId), expected);
+    assert.ok(access.every((r) => r.operations.join() === 'write'));
+    assert.ok(access.every((r) => r.evidence[0].path === 'packages/shared/phases.ts'));
+  }
+});
+
 // Local checkouts are intentionally not checked into Git. Exercise them when present.
 for (const [name, tables, endpoints, providers] of [
   ["crm", 33, 128, ["anthropic", "zite_email"]],
@@ -181,6 +302,25 @@ for (const [name, tables, endpoints, providers] of [
     }
     const bootstrap = model.endpoints.filter((e) => e.name === "bootstrap");
     assert.ok(!model.relationships.some((r) => r.kind === "integration-use" && bootstrap.some((e) => e.id === r.endpointId)));
+
+    if (name === "crm") {
+      const access = (endpoint, table) => model.relationships.find((r) =>
+        r.endpointId === `endpoint:apps/crm/src/api/${endpoint}` && r.tableId === `table:${table}`);
+      for (const table of ["companies", "contacts", "deals", "leads"]) {
+        assert.deepEqual(access("search", table)?.operations, ["read"], `search reads ${table}`);
+        assert.deepEqual(access("seedWorkspace", table)?.operations, ["read", "write"], `seedWorkspace writes ${table}`);
+      }
+      for (const table of ["companies", "contacts", "deals", "leads", "tasks", "activities", "quotes", "pipelines", "stages"]) {
+        assert.deepEqual(access("exportRecords", table)?.operations, ["read"], `exportRecords reads ${table}`);
+      }
+      for (const table of ["dealContacts", "lineItems", "stageChanges", "activities", "tasks", "quotes"]) {
+        const relationship = access("deleteDeals", table);
+        assert.deepEqual(relationship?.operations, ["read", "write"], `deleteDeals mutates ${table}`);
+        const line = ["activities", "tasks", "quotes"].includes(table) ? 49 : 51;
+        assert.ok(relationship.evidence.some((e) => e.path.endsWith('/deleteDeals.ts') && e.line === line));
+      }
+      assert.ok(!model.relationships.some((r) => r.endpointId.endsWith('/seedWorkspace') && r.kind === 'integration-use'));
+    }
 
     const json = serializeSystemModel(model) + "\n";
     await writeFile(path.join(directory, `${revision.name}.json`), json);
