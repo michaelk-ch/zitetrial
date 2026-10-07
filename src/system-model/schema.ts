@@ -3,31 +3,20 @@ import { z } from "zod";
 const idSchema = z.string().min(1);
 const nameSchema = z.string().min(1);
 
-/** Paths use forward slashes and are relative to the analyzed repository root. */
-export const sourceLocationSchema = z.strictObject({
-  path: z.string().min(1).refine(
-    (path) => !path.startsWith("/") && !path.includes("\\") &&
-      !/^[a-zA-Z]:/.test(path) && !path.split("/").includes(".."),
-    "Expected a repository-relative path with forward slashes",
-  ),
-  line: z.number().int().positive().optional(),
-});
-
-const evidenceSchema = z.array(sourceLocationSchema).default([]);
+/** Opaque debugging strings, typically repository-relative path:line references. */
+const evidenceSchema = z.array(z.string()).default([]);
 
 export const appSchema = z.strictObject({
   id: idSchema,
   name: nameSchema,
   visibility: z.enum(["internal", "public", "unknown"]),
   description: z.string().optional(),
-  evidence: evidenceSchema,
 });
 
 export const tableSchema = z.strictObject({
   id: idSchema,
   name: nameSchema,
   description: z.string().optional(),
-  evidence: evidenceSchema,
 });
 
 export const integrationSchema = z.strictObject({
@@ -50,7 +39,6 @@ export const endpointSchema = z.strictObject({
 
 export const relationshipSchema = z.discriminatedUnion("kind", [
   z.strictObject({
-    id: idSchema,
     kind: z.literal("table-access"),
     endpointId: idSchema,
     tableId: idSchema,
@@ -62,7 +50,6 @@ export const relationshipSchema = z.discriminatedUnion("kind", [
     evidence: evidenceSchema,
   }),
   z.strictObject({
-    id: idSchema,
     kind: z.literal("integration-use"),
     endpointId: idSchema,
     integrationId: idSchema,
@@ -97,7 +84,7 @@ export const systemModelSchema = z.strictObject({
     ctx.addIssue({ code: "custom", path, message });
 
   // IDs are unique within each entity kind; named references remove ambiguity.
-  const collectIds = (key: "apps" | "tables" | "integrations" | "endpoints" | "relationships") => {
+  const collectIds = (key: "apps" | "tables" | "integrations" | "endpoints") => {
     const ids = new Set<string>();
     model[key].forEach((entity, index) => {
       if (ids.has(entity.id)) issue([key, index, "id"], `Duplicate ID: ${entity.id}`);
@@ -109,7 +96,6 @@ export const systemModelSchema = z.strictObject({
   const tables = collectIds("tables");
   const integrations = collectIds("integrations");
   const endpoints = collectIds("endpoints");
-  collectIds("relationships");
 
   const requireId = (ids: Set<string>, id: string, path: (string | number)[]) => {
     if (!ids.has(id)) issue(path, `Unresolved reference: ${id}`);
@@ -130,7 +116,6 @@ export const systemModelSchema = z.strictObject({
   });
 });
 
-export type SourceLocation = z.infer<typeof sourceLocationSchema>;
 export type App = z.infer<typeof appSchema>;
 export type Table = z.infer<typeof tableSchema>;
 export type Integration = z.infer<typeof integrationSchema>;

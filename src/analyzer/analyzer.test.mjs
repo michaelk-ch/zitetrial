@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -77,7 +77,7 @@ test("follows called shared exports, aliases, re-exports, callbacks, and recursi
   assert.equal(access.length, 1);
   assert.equal(access[0].tableId, "table:customers");
   assert.deepEqual(access[0].operations, ["read"]);
-  assert.equal(access[0].evidence[0].path, "packages/shared/data.ts");
+  assert.equal(access[0].evidence[0], "packages/shared/data.ts:6");
   const update = model.relationships.find((r) => r.endpointId.includes("update") && r.kind === "table-access");
   assert.deepEqual(update.operations, ["read", "write"]);
   assert.deepEqual(model.integrations.map((i) => i.provider), ["zite_email"]);
@@ -108,7 +108,7 @@ test("extracts SQL joins, subqueries, CTEs, and imported fragments; reports part
   assert.deepEqual(model.diagnostics.map((d) => d.code).sort(), [
     "dynamic-sql", "dynamic-table", "unknown-db-method", "unresolved-table",
   ]);
-  assert.ok(model.relationships.every((r) => r.evidence.every((e) => e.line > 0)));
+  assert.ok(model.relationships.every((r) => r.evidence.every((e) => typeof e === "string")));
   assert.deepEqual(sqlTables('SELECT * FROM "Customers" WHERE EXISTS (SELECT 1 FROM "OrderItems")').names.sort(), ["Customers", "OrderItems"]);
   assert.deepEqual(sqlTables('SELECT * FROM "Customers" WHERE id::text = ANY($1::text[])'), {
     names: ["Customers"], partial: false, failed: false,
@@ -148,7 +148,7 @@ test("observes SDK method calls through factories, excluding constructors, token
   assert.deepEqual(model.integrations.map((i) => i.provider), ["anthropic"]);
   assert.equal(model.relationships.length, 1);
   assert.ok(model.relationships[0].endpointId.endsWith("/ask"));
-  assert.equal(model.relationships[0].evidence[0].path, "packages/shared/ai.ts");
+  assert.equal(model.relationships[0].evidence[0], "packages/shared/ai.ts:5");
 });
 
 test("recovers SQL from conditional pushes and selected plans without scanning unrelated strings", async (t) => {
@@ -195,7 +195,7 @@ test("recovers SQL from conditional pushes and selected plans without scanning u
     ["table:customers", ["read"]], ["table:orderItems", ["read"]],
   ]);
   assert.deepEqual(access("fixedExport"), [["table:customers", ["read"]]]);
-  assert.ok(model.diagnostics.some((d) => d.code === "dynamic-sql" && d.evidence[0].path.endsWith('/export.ts')));
+  assert.ok(model.diagnostics.some((d) => d.code === "dynamic-sql" && d.evidence[0].startsWith('apps/staff/src/api/export.ts:')));
 });
 
 test("resolves finite computed table names with branch-specific mutation evidence", async (t) => {
@@ -222,11 +222,11 @@ test("resolves finite computed table names with branch-specific mutation evidenc
   assert.deepEqual(model.relationships.map((r) => [r.tableId, r.operations]), [
     ["table:customers", ["write"]], ["table:orderItems", ["write"]],
   ]);
-  assert.equal(model.relationships[0].evidence[0].line, 7);
-  assert.equal(model.relationships[1].evidence[0].line, 9);
+  assert.equal(model.relationships[0].evidence[0], "apps/staff/src/api/remove.ts:7");
+  assert.equal(model.relationships[1].evidence[0], "apps/staff/src/api/remove.ts:9");
   assert.equal(model.diagnostics.length, 1);
   assert.equal(model.diagnostics[0].code, "dynamic-table");
-  assert.ok(model.diagnostics[0].evidence[0].path.endsWith('/unknown.ts'));
+  assert.ok(model.diagnostics[0].evidence[0].startsWith('apps/staff/src/api/unknown.ts:'));
 });
 
 test("follows only selected methods in imported phase arrays, including spreads and mutable indexes", async (t) => {
@@ -268,7 +268,7 @@ test("follows only selected methods in imported phase arrays, including spreads 
     const expected = endpoint.name === "seedFirst" ? ["table:customers"] : ["table:customers", "table:orderItems"];
     assert.deepEqual(access.map((r) => r.tableId), expected);
     assert.ok(access.every((r) => r.operations.join() === 'write'));
-    assert.ok(access.every((r) => r.evidence[0].path === 'packages/shared/phases.ts'));
+    assert.ok(access.every((r) => r.evidence[0].startsWith('packages/shared/phases.ts:')));
   }
 });
 
@@ -294,12 +294,8 @@ for (const [name, tables, endpoints, providers] of [
     assert.ok(model.relationships.length > endpoints);
     assert.ok(!model.diagnostics.some((d) => d.code === "unsupported-endpoint"));
     assert.deepEqual(deserializeSystemModel(serializeSystemModel(model)), model);
-    for (const relationship of model.relationships) {
-      for (const evidence of relationship.evidence) {
-        const source = await readFile(path.join(directory, revision.name, evidence.path), "utf8");
-        assert.ok(evidence.line <= source.split("\n").length);
-      }
-    }
+    assert.ok([...model.apps, ...model.tables].every((entity) => !("evidence" in entity)));
+    assert.ok(model.relationships.every((relationship) => !("id" in relationship)));
     const bootstrap = model.endpoints.filter((e) => e.name === "bootstrap");
     assert.ok(!model.relationships.some((r) => r.kind === "integration-use" && bootstrap.some((e) => e.id === r.endpointId)));
 
@@ -317,7 +313,7 @@ for (const [name, tables, endpoints, providers] of [
         const relationship = access("deleteDeals", table);
         assert.deepEqual(relationship?.operations, ["read", "write"], `deleteDeals mutates ${table}`);
         const line = ["activities", "tasks", "quotes"].includes(table) ? 49 : 51;
-        assert.ok(relationship.evidence.some((e) => e.path.endsWith('/deleteDeals.ts') && e.line === line));
+        assert.ok(relationship.evidence.includes(`apps/crm/src/api/deleteDeals.ts:${line}`));
       }
       assert.ok(!model.relationships.some((r) => r.endpointId.endsWith('/seedWorkspace') && r.kind === 'integration-use'));
     }

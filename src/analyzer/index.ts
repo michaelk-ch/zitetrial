@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Node, Project, ScriptTarget, ModuleKind, ModuleResolutionKind, SyntaxKind } from "ts-morph";
 import { systemModelSchema } from "../system-model/schema.ts";
-import type { Diagnostic, Relationship, SourceLocation, SystemModel } from "../system-model/schema.ts";
+import type { Diagnostic, Relationship, SystemModel } from "../system-model/schema.ts";
 import { integrationFor } from "./integrations.ts";
 import { sqlTables } from "./sql.ts";
 import { bodyOf, callable, callables, literal, origin, origins, property } from "./syntax.ts";
@@ -12,8 +12,8 @@ type TableDefinition = { id: string; name: string; sdkName: string; description?
 type AppConfig = { name?: string; description?: string; accessMode?: string };
 type Operation = "read" | "write" | "unknown";
 type Finding =
-  | { kind: "table"; tableId: string; operation: Operation; evidence: SourceLocation }
-  | { kind: "integration"; service: NonNullable<ReturnType<typeof integrationFor>>; evidence: SourceLocation }
+  | { kind: "table"; tableId: string; operation: Operation; evidence: string }
+  | { kind: "integration"; service: NonNullable<ReturnType<typeof integrationFor>>; evidence: string }
   | { kind: "diagnostic"; diagnostic: Diagnostic };
 type Scope = { findings: Finding[]; callees: Set<Node> };
 
@@ -24,8 +24,8 @@ async function json<T>(file: string): Promise<T> {
   return JSON.parse(await readFile(file, "utf8"));
 }
 
-function addEvidence(evidence: SourceLocation[], location: SourceLocation) {
-  if (!evidence.some((item) => item.path === location.path && item.line === location.line)) evidence.push(location);
+function addEvidence(evidence: string[], location: string) {
+  if (!evidence.includes(location)) evidence.push(location);
 }
 
 /** Static analysis only: never imports or executes the analyzed repository. */
@@ -51,7 +51,6 @@ export async function analyzeRepository(
     tables: schema.tables.map((table) => ({
       id: `table:${table.sdkName}`, name: table.name,
       ...(table.description && { description: table.description }),
-      evidence: [{ path: "zite.schema.json" }],
     })),
     integrations: [], endpoints: [], relationships: [], diagnostics: [],
   };
@@ -61,10 +60,8 @@ export async function analyzeRepository(
   ]));
   const relationships = new Map<string, Relationship>();
   const diagnostics = new Map<string, Diagnostic>();
-  const location = (node: Node): SourceLocation => ({
-    path: path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/"),
-    line: node.getStartLineNumber(),
-  });
+  const relativePath = (node: Node) => path.relative(root, node.getSourceFile().getFilePath()).split(path.sep).join("/");
+  const location = (node: Node) => `${relativePath(node)}:${node.getStartLineNumber()}`;
   const warning = (code: string, message: string, node: Node): Finding => ({
     kind: "diagnostic", diagnostic: { severity: "warning", code, message, evidence: [location(node)] },
   });
@@ -76,7 +73,7 @@ export async function analyzeRepository(
       return;
     }
     const targetId = finding.kind === "table" ? finding.tableId : `integration:${finding.service.provider}`;
-    const id = `${endpointId}->${targetId}`;
+    const key = `${endpointId}->${targetId}`;
     if (finding.kind === "integration") {
       let integration = model.integrations.find((item) => item.id === targetId);
       if (!integration) {
@@ -85,12 +82,12 @@ export async function analyzeRepository(
       }
       addEvidence(integration.evidence, finding.evidence);
     }
-    let relationship = relationships.get(id);
+    let relationship = relationships.get(key);
     if (!relationship) {
       relationship = finding.kind === "table"
-        ? { id, kind: "table-access", endpointId, tableId: targetId, operations: [finding.operation], evidence: [] }
-        : { id, kind: "integration-use", endpointId, integrationId: targetId, evidence: [] };
-      relationships.set(id, relationship);
+        ? { kind: "table-access", endpointId, tableId: targetId, operations: [finding.operation], evidence: [] }
+        : { kind: "integration-use", endpointId, integrationId: targetId, evidence: [] };
+      relationships.set(key, relationship);
     }
     if (relationship.kind === "table-access" && finding.kind === "table") {
       const operations = new Set([...relationship.operations, finding.operation]);
@@ -109,7 +106,6 @@ export async function analyzeRepository(
       ...(appConfig.description && { description: appConfig.description }),
       visibility: appConfig.accessMode === "internal" ? "internal" :
         ["external", "public"].includes(appConfig.accessMode ?? "") ? "public" : "unknown",
-      evidence: [{ path: `apps/${entry.name}/zite.config.json` }],
     });
 
     // Each app has its own @/ alias. No installed dependencies or generated clients are needed.
@@ -187,7 +183,7 @@ export async function analyzeRepository(
     const files = project.getSourceFiles().filter((file) => file.getFilePath().startsWith(apiRoot))
       .sort((a, b) => a.getFilePath().localeCompare(b.getFilePath()));
     for (const file of files) {
-      const endpointId = `endpoint:${location(file).path.replace(/\.tsx?$/, "")}`;
+      const endpointId = `endpoint:${relativePath(file).replace(/\.tsx?$/, "")}`;
       const definition = file.getDescendantsOfKind(SyntaxKind.CallExpression).find((call) => {
         const source = origin(call.getExpression());
         return source?.module === "zitejs/backend" && source.members.at(-1) === "createEndpoint";
@@ -216,12 +212,12 @@ export async function analyzeRepository(
       }
     }
   }
-  model.relationships = [...relationships.values()];
+  model.relationships = [...relationships].sort(([a], [b]) => a.localeCompare(b)).map(([, relationship]) => relationship);
   model.diagnostics = [...diagnostics.values()];
-  for (const collection of [model.apps, model.tables, model.endpoints, model.integrations, model.relationships]) {
+  for (const collection of [model.apps, model.tables, model.endpoints, model.integrations]) {
     collection.sort((a, b) => a.id.localeCompare(b.id));
-    for (const item of collection) item.evidence.sort((a, b) => a.path.localeCompare(b.path) || (a.line ?? 0) - (b.line ?? 0));
   }
+  for (const item of [...model.endpoints, ...model.integrations, ...model.relationships]) item.evidence.sort();
   model.diagnostics.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   return systemModelSchema.parse(model);
 }

@@ -21,11 +21,11 @@ test("app access unions endpoint operations without leaking across endpoints or 
     ],
     integrations: [{ id: "email", name: "Email" }],
     relationships: [
-      { id: "r", kind: "table-access", endpointId: "read", tableId: "customer", operations: ["read"] },
-      { id: "w", kind: "table-access", endpointId: "write", tableId: "customer", operations: ["read", "write"] },
-      { id: "u", kind: "table-access", endpointId: "unknown", tableId: "customer", operations: ["unknown"] },
-      { id: "o", kind: "table-access", endpointId: "other", tableId: "deal", operations: ["write"] },
-      { id: "i", kind: "integration-use", endpointId: "unused", integrationId: "email" },
+      { kind: "table-access", endpointId: "read", tableId: "customer", operations: ["read"] },
+      { kind: "table-access", endpointId: "write", tableId: "customer", operations: ["read", "write"] },
+      { kind: "table-access", endpointId: "unknown", tableId: "customer", operations: ["unknown"] },
+      { kind: "table-access", endpointId: "other", tableId: "deal", operations: ["write"] },
+      { kind: "integration-use", endpointId: "unused", integrationId: "email" },
     ],
   });
   const [a, b, empty] = buildAccessMatrix(model);

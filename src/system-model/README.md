@@ -22,8 +22,10 @@ integration calls always originate from an endpoint, identified by `endpointId`.
 The viewer can aggregate endpoint findings by app for its overview. Integration
 relationships represent observed calls and need no separate usage classification.
 
-Every entity and relationship can carry `evidence`: repository-relative file
-paths and optional one-based line numbers. Shared-code findings can point into
+Endpoints, integrations, relationships, and diagnostics can carry `evidence` as
+plain debugging strings, typically `packages/shared/server/settings.ts:234`.
+These strings are opaque: the schema does not parse paths or line numbers.
+Apps and tables do not carry evidence. Shared-code findings can point into
 `packages/shared` while their relationship's `endpointId` identifies the caller.
 
 ## Validation and serialization
@@ -32,9 +34,10 @@ Use `systemModelSchema.parse(value)` or `.safeParse(value)` for input data.
 TypeScript types are inferred from the schemas. `serializeSystemModel` and
 `deserializeSystemModel` validate both sides of a JSON round trip.
 
-IDs are opaque strings unique within their collection. Prefer deterministic IDs
+Entity IDs are opaque strings unique within their collection. Prefer deterministic IDs
 derived from repo-relative paths or table/provider names when building the analyzer.
-Relationships use named references, and validation rejects dangling references,
+Relationships have no IDs; they use endpoint and table/integration references.
+Validation rejects dangling references,
 duplicate IDs, invalid operations, and unknown object properties.
 `schemaVersion: 1` provides a future migration boundary.
 

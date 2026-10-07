@@ -53,9 +53,10 @@ and set a nonzero exit status; partial-analysis diagnostics are part of the mode
   `integrations.ts` covers Zite Email, Airtable, Anthropic, OpenAI, Gemini, Stripe,
   and Slack. Configuration, token checks, constructors, and PDF utilities don't
   count as integration use.
-- Merge repeated endpoint/target edges and attach repository-relative source
-  paths and one-based call-site lines, including findings in shared helpers.
-  IDs and collection ordering are deterministic.
+- Merge repeated endpoint/target edges without storing relationship IDs. Evidence
+  is a list of debugging strings such as `packages/shared/server/settings.ts:234`,
+  including findings in shared helpers. Apps and tables have no evidence.
+  Entity IDs and collection ordering are deterministic.
 
 ## Deliberate limits
 

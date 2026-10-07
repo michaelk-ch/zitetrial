@@ -19,13 +19,13 @@ function example() {
     endpoints: [{ id: "send-receipt", name: "Send receipt", appId: "staff" }],
     relationships: [
       {
-        id: "payment-access", kind: "table-access",
+        kind: "table-access",
         endpointId: "send-receipt", tableId: "payments",
         operations: ["read", "write"],
-        evidence: [{ path: "apps/staff/src/api/send-receipt.ts", line: 12 }],
+        evidence: ["apps/staff/src/api/send-receipt.ts:12"],
       },
       {
-        id: "email-call", kind: "integration-use",
+        kind: "integration-use",
         endpointId: "send-receipt", integrationId: "email",
       },
     ],
@@ -65,8 +65,8 @@ test("rejects dangling ownership, endpoints, and usage targets", () => {
   }
 });
 
-test("rejects duplicate IDs", () => {
-  for (const key of ["apps", "tables", "integrations", "endpoints", "relationships"]) {
+test("rejects duplicate entity IDs", () => {
+  for (const key of ["apps", "tables", "integrations", "endpoints"]) {
     const input = example();
     input[key].push(input[key][0]);
     assert.equal(systemModelSchema.safeParse(input).success, false);
@@ -75,6 +75,10 @@ test("rejects duplicate IDs", () => {
 
 test("rejects fields, app-level access, and configured integration relationships", () => {
   const mutations = [
+    (m) => { m.apps[0].evidence = []; },
+    (m) => { m.tables[0].evidence = []; },
+    (m) => { m.relationships[0].id = "payment-access"; },
+    (m) => { m.relationships[1].id = "email-call"; },
     (m) => { m.tables[0].fields = [{ name: "id" }]; },
     (m) => {
       delete m.relationships[0].endpointId;
@@ -87,7 +91,7 @@ test("rejects fields, app-level access, and configured integration relationships
     },
     (m) => { m.relationships[1].usage = "configured"; },
     (m) => { m.relationships[0].endpointId = "staff"; },
-    (m) => { m.relationships.push({ id: "reference", kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }); },
+    (m) => { m.relationships.push({ kind: "table-reference", sourceTableId: "payments", targetTableId: "payments" }); },
   ];
   for (const mutate of mutations) {
     const input = example();
@@ -108,13 +112,13 @@ test("rejects malformed, contradictory, and unsupported serialized data", () => 
   assert.throws(() => serializeSystemModel({ ...example(), schemaVersion: 2 }));
 });
 
-test("requires portable evidence paths and positive one-based line numbers", () => {
-  for (const path of ["/tmp/repo/file.ts", "../file.ts", "apps/../../file.ts", "C:/repo/file.ts", "apps\\file.ts"]) {
+test("treats evidence as opaque debugging strings", () => {
+  const input = example();
+  input.relationships[0].evidence = ["packages/shared/server/settings.ts:234", "A debugging note"];
+  assert.deepEqual(systemModelSchema.parse(input).relationships[0].evidence, input.relationships[0].evidence);
+  for (const value of [{ path: "apps/file.ts", line: 1 }, 123, null]) {
     const input = example();
-    input.relationships[0].evidence[0].path = path;
+    input.relationships[0].evidence = [value];
     assert.equal(systemModelSchema.safeParse(input).success, false);
   }
-  const input = example();
-  input.relationships[0].evidence[0].line = 0;
-  assert.equal(systemModelSchema.safeParse(input).success, false);
 });
