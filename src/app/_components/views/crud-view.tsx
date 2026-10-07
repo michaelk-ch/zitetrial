@@ -116,7 +116,7 @@ export default function CrudView({ model }: { model: SystemModel }) {
         </span>
       }
     >
-      <div data-wide className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3">
         <input
           type="search"
           value={query}

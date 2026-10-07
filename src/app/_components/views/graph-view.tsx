@@ -463,7 +463,7 @@ export default function GraphView({ model }: { model: SystemModel }) {
 
   return (
     <Panel>
-      <div data-wide className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3 text-xs">
         <nav aria-label="Graph focus" className="flex min-w-0 items-center gap-1.5 text-[13px]">
           {focus ? (
             <>
